@@ -169,8 +169,10 @@ class GraphDB:
             event_id: $event_id
         })
         SET e.kind = 'connection',
+            e.direction = 'attacker_to_maze',
             e.protocol = $protocol,
             e.payload = $payload,
+            e.prompt = '',
             e.source_ip = $source_ip,
             e.created_at = datetime()
         MERGE (s)-[:OBSERVED]->(e)
@@ -185,6 +187,43 @@ class GraphDB:
                 "protocol": protocol,
                 "payload": payload,
                 "source_ip": source_ip,
+            },
+        )
+
+    async def record_response(
+        self,
+        *,
+        session_id: str,
+        current_asset_id: str,
+        protocol: str,
+        payload: str,
+        prompt: str = "",
+    ) -> None:
+        query = """
+        MATCH (s:Session {session_id: $session_id})
+        MATCH (a:Asset {asset_id: $current_asset_id})
+        MERGE (e:Event {
+            event_id: $event_id
+        })
+        SET e.kind = 'response',
+            e.direction = 'maze_to_attacker',
+            e.protocol = $protocol,
+            e.payload = $payload,
+            e.prompt = $prompt,
+            e.source_ip = 'maze',
+            e.created_at = datetime()
+        MERGE (s)-[:OBSERVED]->(e)
+        MERGE (e)-[:TOUCHED]->(a)
+        """
+        await self._run(
+            query,
+            {
+                "event_id": str(uuid4()),
+                "session_id": session_id,
+                "current_asset_id": current_asset_id,
+                "protocol": protocol,
+                "payload": payload,
+                "prompt": prompt,
             },
         )
 
@@ -382,8 +421,9 @@ class GraphDB:
 
     async def recent_payloads(self, limit: int = 20) -> list[dict[str, Any]]:
         query = """
-        MATCH (e:Event {kind: 'connection'})-[:TOUCHED]->(a:Asset)
+        MATCH (s:Session)-[:OBSERVED]->(e:Event {kind: 'connection'})-[:TOUCHED]->(a:Asset)
         RETURN {
+            session_id: s.session_id,
             event_id: e.event_id,
             payload: e.payload,
             protocol: e.protocol,
@@ -397,6 +437,105 @@ class GraphDB:
         """
         records = await self._run_many(query, {"limit": limit})
         return [self._normalize_graph_value(item["payload"]) for item in records]
+
+    async def recent_sessions(self, *, protocol: str | None = None, limit: int = 25) -> list[dict[str, Any]]:
+        protocol_filter = "WHERE s.protocol = $protocol" if protocol else ""
+        query = f"""
+        MATCH (s:Session)<-[:INITIATED]-(i:Identity)
+        OPTIONAL MATCH (s)-[:TARGETS]->(entry:Asset)
+        {protocol_filter}
+        CALL {{
+            WITH s
+            OPTIONAL MATCH (s)-[:VISITED]->(visited:Asset)
+            RETURN collect(DISTINCT visited.hostname) AS visited_hosts
+        }}
+        CALL {{
+            WITH s
+            OPTIONAL MATCH (s)-[:OBSERVED]->(cmd:Event {{kind: 'connection'}})
+            RETURN count(cmd) AS command_count,
+                   max(cmd.created_at) AS last_command_at
+        }}
+        CALL {{
+            WITH s
+            OPTIONAL MATCH (s)-[:OBSERVED]->(last_cmd:Event {{kind: 'connection'}})
+            RETURN last_cmd.payload AS last_payload
+            ORDER BY last_cmd.created_at DESC
+            LIMIT 1
+        }}
+        RETURN {{
+            session_id: s.session_id,
+            protocol: s.protocol,
+            source_ip: i.identity_id,
+            created_at: s.created_at,
+            last_seen: s.last_seen,
+            entry_asset_id: entry.asset_id,
+            entry_hostname: entry.hostname,
+            visited_hosts: visited_hosts,
+            command_count: command_count,
+            last_command_at: last_command_at,
+            last_payload: last_payload
+        }} AS session
+        ORDER BY s.last_seen DESC
+        LIMIT $limit
+        """
+        params: dict[str, Any] = {"limit": limit}
+        if protocol:
+            params["protocol"] = protocol
+        records = await self._run_many(query, params)
+        return [self._normalize_graph_value(item["session"]) for item in records]
+
+    async def session_detail(self, session_id: str) -> dict[str, Any]:
+        summary_query = """
+        MATCH (s:Session {session_id: $session_id})<-[:INITIATED]-(i:Identity)
+        OPTIONAL MATCH (s)-[:TARGETS]->(entry:Asset)
+        RETURN {
+            session_id: s.session_id,
+            protocol: s.protocol,
+            source_ip: i.identity_id,
+            created_at: s.created_at,
+            last_seen: s.last_seen,
+            entry_asset_id: entry.asset_id,
+            entry_hostname: entry.hostname
+        } AS session
+        """
+        transcript_query = """
+        MATCH (s:Session {session_id: $session_id})-[:OBSERVED]->(e:Event)-[:TOUCHED]->(a:Asset)
+        RETURN {
+            event_id: e.event_id,
+            kind: e.kind,
+            direction: e.direction,
+            protocol: e.protocol,
+            payload: e.payload,
+            prompt: e.prompt,
+            source_ip: e.source_ip,
+            created_at: e.created_at,
+            asset_id: a.asset_id,
+            hostname: a.hostname
+        } AS item
+        ORDER BY e.created_at ASC
+        """
+        intent_query = """
+        MATCH (s:Session {session_id: $session_id})-[:EMITTED]->(i:Intent)-[:AGAINST]->(a:Asset)
+        RETURN {
+            intent_id: i.intent_id,
+            category: i.category,
+            confidence: i.confidence,
+            summary: i.summary,
+            raw_input: i.raw_input,
+            created_at: i.created_at,
+            asset_id: a.asset_id,
+            hostname: a.hostname
+        } AS intent
+        ORDER BY i.created_at ASC
+        """
+        summary = self._normalize_graph_value((await self._run_single(summary_query, {"session_id": session_id}))["session"])
+        transcript_records = await self._run_many(transcript_query, {"session_id": session_id})
+        intent_records = await self._run_many(intent_query, {"session_id": session_id})
+        return {
+            "session": summary,
+            "transcript": [self._normalize_graph_value(item["item"]) for item in transcript_records],
+            "intents": [self._normalize_graph_value(item["intent"]) for item in intent_records],
+        }
 
     async def quarantine_source(self, source: str, reason: str) -> dict[str, Any]:
         action_id = str(uuid4())

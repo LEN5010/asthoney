@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SSH Session Detail</title>
+  <style>
+    :root {
+      --bg: #08101c;
+      --panel: rgba(15, 25, 41, 0.94);
+      --panel-border: rgba(110, 137, 173, 0.18);
+      --text: #e6eef8;
+      --muted: #91a3bc;
+      --accent: #4fd1c5;
+      --inbound: rgba(79, 209, 197, 0.11);
+      --outbound: rgba(255, 143, 107, 0.12);
+      --danger: #ff657b;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "SF Mono", "JetBrains Mono", "IBM Plex Mono", monospace;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(79, 209, 197, 0.12), transparent 26%),
+        radial-gradient(circle at top right, rgba(255, 143, 107, 0.12), transparent 24%),
+        linear-gradient(160deg, #050912 0%, #091321 60%, #08101c 100%);
+    }
+
+    .wrap {
+      width: min(1380px, calc(100vw - 32px));
+      margin: 16px auto;
+      display: grid;
+      grid-template-columns: 1.25fr 0.75fr;
+      gap: 18px;
+    }
+
+    .panel {
+      background: rgba(7, 13, 23, 0.76);
+      border: 1px solid var(--panel-border);
+      border-radius: 22px;
+      padding: 22px;
+      backdrop-filter: blur(16px);
+    }
+
+    .header { margin-bottom: 16px; }
+    .title { margin: 10px 0 0; font-size: clamp(24px, 4vw, 34px); }
+    .muted { color: var(--muted); line-height: 1.7; font-size: 13px; }
+    .back { color: var(--accent); text-decoration: none; font-size: 13px; }
+
+    .stack { display: grid; gap: 14px; }
+
+    .line {
+      border-radius: 16px;
+      padding: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .line.inbound { background: var(--inbound); }
+    .line.outbound { background: var(--outbound); }
+
+    .line-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 10px;
+      font-size: 12px;
+      color: var(--muted);
+      flex-wrap: wrap;
+    }
+
+    .payload {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .prompt {
+      margin-top: 10px;
+      color: var(--accent);
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: rgba(255, 101, 123, 0.12);
+      border: 1px solid rgba(255, 101, 123, 0.2);
+      color: #ffd5dc;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 18px;
+      padding: 16px;
+    }
+
+    .card + .card { margin-top: 14px; }
+
+    .card h3 {
+      margin: 0 0 12px;
+      font-size: 14px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .list { display: grid; gap: 10px; }
+
+    .list-item {
+      border-radius: 14px;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .empty {
+      color: var(--muted);
+      text-align: center;
+      padding: 22px;
+      border-radius: 16px;
+      border: 1px dashed rgba(255, 255, 255, 0.08);
+    }
+
+    @media (max-width: 1100px) {
+      .wrap { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="panel">
+      <div class="header">
+        <a class="back" href="/sessions/view">返回 SSH 会话列表</a>
+        <h1 class="title">单条 SSH 对话日志</h1>
+        <div class="muted" id="sessionMeta">等待加载会话...</div>
+      </div>
+      <div class="stack" id="transcript">
+        <div class="empty">暂无对话数据</div>
+      </div>
+    </section>
+
+    <aside>
+      <section class="card">
+        <h3>AI 提炼分析</h3>
+        <div class="list" id="analysisCard">
+          <div class="empty">等待 AI 分析</div>
+        </div>
+      </section>
+      <section class="card">
+        <h3>意图轨迹</h3>
+        <div class="list" id="intentList">
+          <div class="empty">暂无意图数据</div>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const sessionId = params.get("session_id");
+    const sessionMetaEl = document.getElementById("sessionMeta");
+    const transcriptEl = document.getElementById("transcript");
+    const analysisCardEl = document.getElementById("analysisCard");
+    const intentListEl = document.getElementById("intentList");
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll("\"", "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function renderTranscript(items) {
+      if (!items.length) {
+        transcriptEl.innerHTML = '<div class="empty">暂无对话数据</div>';
+        return;
+      }
+      transcriptEl.innerHTML = items.map((item) => `
+        <article class="line ${item.direction === "attacker_to_maze" ? "inbound" : "outbound"}">
+          <div class="line-top">
+            <span>${escapeHtml(item.created_at || "n/a")}</span>
+            <span>${escapeHtml(item.hostname || item.asset_id || "unknown")}</span>
+            <span>${escapeHtml(item.direction || "unknown")}</span>
+          </div>
+          <div class="payload">${escapeHtml(item.payload || "") || "(无文本输出，仅 prompt 变化)"}</div>
+          ${item.prompt ? `<div class="prompt">${escapeHtml(item.prompt)}</div>` : ""}
+        </article>
+      `).join("");
+    }
+
+    function renderIntents(intents) {
+      if (!intents.length) {
+        intentListEl.innerHTML = '<div class="empty">暂无意图数据</div>';
+        return;
+      }
+      intentListEl.innerHTML = intents.map((intent) => `
+        <article class="list-item">
+          <strong>${escapeHtml(intent.category || "unknown")}</strong><br>
+          时间: ${escapeHtml(intent.created_at || "n/a")}<br>
+          置信度: ${escapeHtml(intent.confidence || "n/a")}<br>
+          目标: ${escapeHtml(intent.hostname || intent.asset_id || "unknown")}<br>
+          摘要: ${escapeHtml(intent.summary || "")}
+        </article>
+      `).join("");
+    }
+
+    function renderAnalysis(analysis) {
+      analysisCardEl.innerHTML = `
+        <article class="list-item">
+          <strong>结论</strong><br>
+          ${escapeHtml(analysis.summary || "暂无结论")}
+        </article>
+        <article class="list-item">
+          <strong>目标判断</strong><br>
+          ${escapeHtml(analysis.objective || "unknown")}
+        </article>
+        <article class="list-item">
+          <strong>风险等级</strong><br>
+          <span class="badge">${escapeHtml(analysis.risk_level || "unknown")}</span>
+        </article>
+        <article class="list-item">
+          <strong>是否疑似非真人测试 Agent</strong><br>
+          ${analysis.likely_non_human_test_agent ? "是" : "否"}<br>
+          ${escapeHtml((analysis.likely_non_human_reasons || []).join(" | ") || "无")}
+        </article>
+        <article class="list-item">
+          <strong>战术手段</strong><br>
+          ${escapeHtml((analysis.techniques || []).join(" | ") || "无")}
+        </article>
+        <article class="list-item">
+          <strong>证据摘要</strong><br>
+          ${escapeHtml((analysis.evidence || []).join("\n") || "无")}
+        </article>
+        <article class="list-item">
+          <strong>建议动作</strong><br>
+          ${escapeHtml((analysis.suggested_actions || []).join("\n") || "无")}
+        </article>
+      `;
+    }
+
+    async function loadSession() {
+      if (!sessionId) {
+        sessionMetaEl.textContent = "缺少 session_id 参数";
+        return;
+      }
+      try {
+        const [detailResp, analysisResp] = await Promise.all([
+          fetch(`/sessions/${encodeURIComponent(sessionId)}`),
+          fetch(`/sessions/${encodeURIComponent(sessionId)}/analysis`),
+        ]);
+        const detail = await detailResp.json();
+        const analysis = await analysisResp.json();
+        const session = detail.session || {};
+        sessionMetaEl.innerHTML = `
+          会话: ${escapeHtml(session.session_id || "unknown")}<br>
+          来源: ${escapeHtml(session.source_ip || "unknown")}<br>
+          协议: ${escapeHtml(session.protocol || "unknown")}<br>
+          入口资产: ${escapeHtml(session.entry_hostname || session.entry_asset_id || "unknown")}<br>
+          首次出现: ${escapeHtml(session.created_at || "n/a")}<br>
+          最近活动: ${escapeHtml(session.last_seen || "n/a")}
+        `;
+        renderTranscript(detail.transcript || []);
+        renderIntents(detail.intents || []);
+        renderAnalysis(analysis);
+      } catch (error) {
+        sessionMetaEl.textContent = `加载失败: ${error}`;
+      }
+    }
+
+    loadSession();
+  </script>
+</body>
+</html>

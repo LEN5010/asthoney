@@ -65,6 +65,24 @@
       line-height: 1.6;
     }
 
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 18px;
+    }
+
+    .action-link {
+      text-decoration: none;
+      color: var(--text);
+      border: 1px solid rgba(79, 209, 197, 0.28);
+      background: rgba(79, 209, 197, 0.08);
+      padding: 10px 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      letter-spacing: 0.04em;
+    }
+
     .status-dot {
       display: inline-flex;
       align-items: center;
@@ -236,7 +254,11 @@
       <div>
         <p class="status-dot">Threat Situational Awareness</p>
         <h1 class="title">Generative Infinite Deception Maze</h1>
-        <p class="subtitle">实时监控多智能体蜜网中的连接活跃度、诱饵资产暴露面、MCP 告警与最新攻击载荷。</p>
+        <p class="subtitle">实时监控多智能体蜜网中的连接活跃度、诱饵资产暴露面、MCP 告警、攻击载荷，并跳转到逐条 SSH 会话日志与 AI 行为分析页面。</p>
+        <div class="actions">
+          <a class="action-link" href="/sessions/view">查看 SSH 会话日志</a>
+          <a class="action-link" href="/docs">查看 API 文档</a>
+        </div>
       </div>
       <div class="meta" id="lastUpdated">等待首轮同步</div>
     </section>

@@ -32,6 +32,7 @@ class SubAgent:
         self._package_pattern = re.compile(r"^(sudo\s+)?apt(?:-get)?\b")
         self._identity_pattern = re.compile(r"^(w|who|top)(?:\s|$)")
         self._wildcard_pattern = re.compile(r"(^|\s)[^|;&]*\*")
+        self._privilege_pattern = re.compile(r"^(root|sudo|su)(?:\s|$)")
 
     @property
     def asset_id(self) -> str:
@@ -192,9 +193,20 @@ class SubAgent:
         if lowered == "clear":
             return "\033[H\033[2J\033[3J"
 
+        if lowered == "root":
+            return "bash: root: command not found"
+
+        if lowered.startswith("sudo"):
+            return f"{self.user} is not in the sudoers file. This incident will be reported."
+
+        if lowered == "su" or lowered.startswith("su "):
+            return "su: Authentication failure"
+
         if self._dangerous_pattern.search(lowered):
-            blocked_target = normalized.split(maxsplit=1)[1] if " " in normalized else "target"
             if lowered.startswith("rm"):
+                if len(normalized.split()) == 1:
+                    return "rm: missing operand"
+                blocked_target = normalized.split(maxsplit=1)[1]
                 return f"rm: cannot remove '{blocked_target}': Permission denied"
             return f"{normalized.split()[0]}: Permission denied"
 
@@ -402,6 +414,8 @@ class SubAgent:
         if self._dangerous_pattern.search(lowered):
             return True
         if self._package_pattern.search(lowered):
+            return True
+        if self._privilege_pattern.search(lowered):
             return True
         if self._identity_pattern.match(lowered):
             return True

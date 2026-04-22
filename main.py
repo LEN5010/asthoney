@@ -78,6 +78,16 @@ async def dashboard() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/sessions/view", response_class=FileResponse)
+async def sessions_view() -> FileResponse:
+    return FileResponse(STATIC_DIR / "sessions.html")
+
+
+@app.get("/session/view", response_class=FileResponse)
+async def session_view() -> FileResponse:
+    return FileResponse(STATIC_DIR / "session.html")
+
+
 @app.get("/healthz")
 async def healthz(request: Request) -> dict[str, Any]:
     graph_ok = await request.app.state.graph_db.healthcheck()
@@ -109,6 +119,22 @@ async def alerts(request: Request) -> dict[str, Any]:
 async def payloads(request: Request) -> dict[str, Any]:
     recent_payloads = await request.app.state.graph_db.recent_payloads(limit=20)
     return {"payloads": recent_payloads}
+
+
+@app.get("/sessions")
+async def sessions(request: Request) -> dict[str, Any]:
+    ssh_sessions = await request.app.state.graph_db.recent_sessions(protocol="ssh", limit=50)
+    return {"sessions": ssh_sessions}
+
+
+@app.get("/sessions/{session_id}")
+async def session_detail(request: Request, session_id: str) -> dict[str, Any]:
+    return await request.app.state.graph_db.session_detail(session_id)
+
+
+@app.get("/sessions/{session_id}/analysis")
+async def session_analysis(request: Request, session_id: str) -> dict[str, Any]:
+    return await request.app.state.main_agent.analyze_session(session_id)
 
 
 @app.post("/simulate")

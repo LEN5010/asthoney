@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SSH Session Log Viewer</title>
+  <style>
+    :root {
+      --bg: #07101b;
+      --panel: rgba(15, 24, 38, 0.94);
+      --panel-border: rgba(110, 137, 173, 0.18);
+      --text: #e6eef8;
+      --muted: #91a3bc;
+      --accent: #4fd1c5;
+      --accent-soft: rgba(79, 209, 197, 0.1);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "SF Mono", "JetBrains Mono", "IBM Plex Mono", monospace;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(79, 209, 197, 0.12), transparent 24%),
+        linear-gradient(160deg, #050a14 0%, #0b1524 60%, #08111c 100%);
+    }
+
+    .wrap {
+      width: min(1180px, calc(100vw - 40px));
+      margin: 24px auto;
+      padding: 28px;
+      background: rgba(5, 10, 18, 0.7);
+      border: 1px solid var(--panel-border);
+      border-radius: 24px;
+      backdrop-filter: blur(16px);
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    .title { margin: 0; font-size: clamp(24px, 4vw, 38px); }
+    .subtitle { color: var(--muted); line-height: 1.6; margin-top: 10px; }
+    .back { color: var(--accent); text-decoration: none; font-size: 13px; }
+
+    .list { display: grid; gap: 14px; }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 18px;
+      padding: 16px;
+    }
+
+    .row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.7;
+      margin-top: 12px;
+    }
+
+    .payload {
+      margin-top: 12px;
+      color: var(--accent);
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 13px;
+      line-height: 1.6;
+      padding: 12px;
+      border-radius: 14px;
+      background: var(--accent-soft);
+    }
+
+    .link {
+      color: var(--text);
+      text-decoration: none;
+      padding: 9px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(79, 209, 197, 0.28);
+      background: rgba(79, 209, 197, 0.08);
+      font-size: 12px;
+    }
+
+    .empty {
+      text-align: center;
+      color: var(--muted);
+      border: 1px dashed rgba(255, 255, 255, 0.08);
+      border-radius: 16px;
+      padding: 28px;
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <div class="topbar">
+      <div>
+        <a class="back" href="/">返回态势面板</a>
+        <h1 class="title">SSH 会话日志列表</h1>
+        <p class="subtitle">按会话查看攻击者与蜜网终端的完整交互，并跳转到单条 SSH 对话详情与 AI 分析。</p>
+      </div>
+      <div class="meta" id="lastUpdated">等待刷新</div>
+    </div>
+
+    <section class="list" id="sessionList">
+      <div class="empty">暂无 SSH 会话</div>
+    </section>
+  </main>
+
+  <script>
+    const sessionListEl = document.getElementById("sessionList");
+    const lastUpdatedEl = document.getElementById("lastUpdated");
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll("\"", "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function renderSessions(sessions) {
+      if (!sessions.length) {
+        sessionListEl.innerHTML = '<div class="empty">暂无 SSH 会话</div>';
+        return;
+      }
+      sessionListEl.innerHTML = sessions.map((session) => `
+        <article class="card">
+          <div class="row">
+            <strong>${escapeHtml(session.session_id)}</strong>
+            <a class="link" href="/session/view?session_id=${encodeURIComponent(session.session_id)}">查看对话与分析</a>
+          </div>
+          <div class="meta">
+            来源: ${escapeHtml(session.source_ip || "unknown")}<br>
+            协议: ${escapeHtml(session.protocol || "unknown")}<br>
+            入口资产: ${escapeHtml(session.entry_hostname || session.entry_asset_id || "unknown")}<br>
+            首次出现: ${escapeHtml(session.created_at || "n/a")}<br>
+            最近活动: ${escapeHtml(session.last_seen || "n/a")}<br>
+            命令数: ${escapeHtml(session.command_count || 0)}
+          </div>
+          <div class="payload">${escapeHtml(session.last_payload || "(无最近载荷)")}</div>
+        </article>
+      `).join("");
+    }
+
+    async function refresh() {
+      try {
+        const resp = await fetch("/sessions");
+        const payload = await resp.json();
+        renderSessions(payload.sessions || []);
+        lastUpdatedEl.textContent = `最近刷新 ${new Date().toLocaleString("zh-CN", { hour12: false })}`;
+      } catch (error) {
+        lastUpdatedEl.textContent = `刷新失败: ${error}`;
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

@@ -10,6 +10,10 @@
 ├── README.md
 ├── main.py
 ├── requirements.txt
+├── static
+│   ├── index.html
+│   ├── session.html
+│   └── sessions.html
 └── src
     ├── __init__.py
     ├── agents
@@ -35,6 +39,8 @@
 - `SubAgent` 通过 DashScope `qwen-max` 生成高交互 Linux 终端响应，同时保留确定性降级逻辑，避免 API 抖动导致服务中断。
 - `GraphDB` 将资产、会话、意图、告警和抢占式隔离动作统一存储于 Neo4j，用于支撑动态横向移动诱捕。
 - `MCP Trap` 暴露不应被合法 Agent 调用的危险工具，一旦触发即产生高置信度告警并触发隔离动作。
+- `Web Dashboard` 提供态势总览、SSH 会话列表、单会话日志查看以及 AI 自动研判页面。
+- `AI Session Analysis` 基于 DashScope 对攻击者行为提炼战术手段、攻击目标，并评估是否疑似非真人测试 Agent；当模型不可用时自动退回启发式分析。
 
 ## 本地运行
 
@@ -75,6 +81,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 ```bash
 curl http://127.0.0.1:8000/healthz
 curl http://127.0.0.1:8000/status
+curl http://127.0.0.1:8000/sessions
 curl -X POST http://127.0.0.1:8000/simulate \
   -H 'Content-Type: application/json' \
   -d '{"payload":"ssh admin@10.0.5.2","protocol":"ssh","source_ip":"198.51.100.9","destination_port":2222}'
@@ -97,9 +104,33 @@ curl -X POST http://127.0.0.1:8000/mcp/tools/bypass_security_guardrails \
   -d '{"arguments":{"target":"policy-engine","mode":"off"}}'
 ```
 
+## WebView 页面
+
+- 总览态势面板: `http://127.0.0.1:8000/`
+- SSH 会话列表页: `http://127.0.0.1:8000/sessions/view`
+- 单条 SSH 对话详情页: `http://127.0.0.1:8000/session/view?session_id=<session_id>`
+
+## 会话日志与 AI 分析接口
+
+```bash
+curl http://127.0.0.1:8000/sessions
+curl http://127.0.0.1:8000/sessions/<session_id>
+curl http://127.0.0.1:8000/sessions/<session_id>/analysis
+```
+
+`/sessions/<session_id>/analysis` 会输出：
+
+- `summary`: 攻击过程摘要
+- `objective`: 当前判断的攻击者目的
+- `techniques`: 提炼出的战术手段
+- `likely_non_human_test_agent`: 是否疑似非真人测试 Agent
+- `likely_non_human_reasons`: 判定依据
+- `suggested_actions`: 后续防御建议
+
 ## 运行说明
 
 - FastAPI 控制面默认监听 `8000`。
 - 异步蜜罐入口默认监听 `2222` 和 `2323`。
 - 如果未配置 `DASHSCOPE_API_KEY`，子智能体仍可运行，但会退化为确定性伪终端响应。
-- Neo4j 中会持续积累 `Asset`、`Session`、`Intent`、`Alert` 与 `Action` 节点，可用于后续图可视化和抢占式联动扩展。
+- Neo4j 中会持续积累 `Asset`、`Session`、`Intent`、`Alert`、`Action` 与 `Event` 节点，其中 `Event` 同时记录攻击者输入和蜜罐响应，可用于逐条 SSH 对话回放。
+- `/payloads` 侧重展示最新攻击输入，`/sessions` 与 `/sessions/<session_id>` 则用于完整会话审计与前端日志回放。
