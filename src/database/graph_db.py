@@ -376,6 +376,28 @@ class GraphDB:
         records = await self._run_many(query, {"limit": limit})
         return [self._hydrate_alert(item["alert"]) for item in records]
 
+    async def asset_count(self) -> int:
+        record = await self._run_single("MATCH (a:Asset) RETURN count(a) AS total", {})
+        return int(record["total"])
+
+    async def recent_payloads(self, limit: int = 20) -> list[dict[str, Any]]:
+        query = """
+        MATCH (e:Event {kind: 'connection'})-[:TOUCHED]->(a:Asset)
+        RETURN {
+            event_id: e.event_id,
+            payload: e.payload,
+            protocol: e.protocol,
+            source_ip: e.source_ip,
+            created_at: e.created_at,
+            asset_id: a.asset_id,
+            hostname: a.hostname
+        } AS payload
+        ORDER BY e.created_at DESC
+        LIMIT $limit
+        """
+        records = await self._run_many(query, {"limit": limit})
+        return [self._normalize_graph_value(item["payload"]) for item in records]
+
     async def quarantine_source(self, source: str, reason: str) -> dict[str, Any]:
         action_id = str(uuid4())
         query = """

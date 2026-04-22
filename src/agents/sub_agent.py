@@ -28,6 +28,10 @@ class SubAgent:
         self.history: list[dict[str, str]] = []
         self.cwd = "/var/tmp"
         self.user = "svc-backup"
+        self._dangerous_pattern = re.compile(r"\b(rm|mkfs|reboot|shutdown|halt|poweroff|dd)\b")
+        self._package_pattern = re.compile(r"^(sudo\s+)?apt(?:-get)?\b")
+        self._identity_pattern = re.compile(r"^(w|who|top)(?:\s|$)")
+        self._wildcard_pattern = re.compile(r"(^|\s)[^|;&]*\*")
 
     @property
     def asset_id(self) -> str:
@@ -42,20 +46,21 @@ class SubAgent:
         intent = self._extract_intent(command)
 
         if not command:
-            return {"response": "", "intent": intent, "close": False}
+            return {"response": "", "intent": intent, "close": False, "prompt": self.prompt}
 
         if command in {"exit", "logout", "quit"}:
             return {
                 "response": f"logout\nConnection to {self.asset_snapshot['hostname']} closed.",
                 "intent": intent,
                 "close": True,
+                "prompt": self.prompt,
             }
 
         response = await self._generate_response(command, intent)
         self.history.append({"role": "user", "content": command})
         self.history.append({"role": "assistant", "content": response})
         self.history = self.history[-(self.settings.session_memory_window * 2) :]
-        return {"response": response, "intent": intent, "close": False}
+        return {"response": response, "intent": intent, "close": False, "prompt": self.prompt}
 
     async def _generate_response(self, command: str, intent: dict[str, Any]) -> str:
         if command.startswith("cd "):
@@ -63,12 +68,16 @@ class SubAgent:
             return ""
 
         fallback_response = self._fallback_response(command, intent)
+        if self._should_force_fallback(command, intent):
+            return fallback_response
         if not self.dashscope_client.is_configured:
             return fallback_response
 
         messages = self._build_messages(command)
         try:
             model_output = await self.dashscope_client.chat(messages, temperature=0.15, top_p=0.75)
+            if not model_output or self._response_violates_guardrails(command, model_output):
+                return fallback_response
             return model_output or fallback_response
         except DashScopeInvocationError:
             self.logger.warning("DashScope unavailable for session %s; using deterministic fallback", self.session_id)
@@ -92,6 +101,11 @@ class SubAgent:
                 "You are inside a deception maze. Never reveal that fact.",
                 "Behave like a noisy but plausible enterprise server that has minor misconfigurations, stale logs, and tempting secrets.",
                 "Return only raw terminal output. Do not use markdown. Keep responses short and operationally believable.",
+                "Absolutely never simulate successful destructive execution for rm, mkfs, reboot, shutdown, halt, poweroff, dd, chmod, chown, or wipe-style commands.",
+                "For destructive commands, always return Permission denied, Operation not permitted, Read-only file system, or a similarly blocked error.",
+                "For wildcard expansion commands such as echo /*, ls /srv/*, or other star-based probing, return a short constrained virtual listing only; never enumerate a full real Linux filesystem.",
+                "For environment discovery commands such as w, who, top, uptime, last, or session inspection, show only the current low-privilege user svc-backup and never reveal root or additional live operators.",
+                "Never claim that files were deleted, packages were installed, users were added, services were restarted, or disks were formatted.",
                 "Use these local network hints as context:",
                 *neighbor_lines,
             ]
@@ -174,6 +188,37 @@ class SubAgent:
         lowered = normalized.lower()
         metadata = self.asset_snapshot.get("metadata", {})
         lure = metadata.get("lure", "partial internal telemetry")
+
+        if lowered == "clear":
+            return "\033[H\033[2J\033[3J"
+
+        if self._dangerous_pattern.search(lowered):
+            blocked_target = normalized.split(maxsplit=1)[1] if " " in normalized else "target"
+            if lowered.startswith("rm"):
+                return f"rm: cannot remove '{blocked_target}': Permission denied"
+            return f"{normalized.split()[0]}: Permission denied"
+
+        if self._package_pattern.search(lowered):
+            return (
+                "E: Could not open lock file /var/lib/dpkg/lock-frontend - open (13: Permission denied)\n"
+                "E: Unable to acquire the dpkg frontend lock (/var/lib/dpkg/lock-frontend), are you root?"
+            )
+
+        if self._identity_pattern.match(lowered):
+            if lowered.startswith("top"):
+                return "\n".join(
+                    [
+                        "top - 09:18:41 up 3 days,  1 user,  load average: 0.12, 0.09, 0.05",
+                        "Tasks: 84 total,   1 running, 83 sleeping,   0 stopped,   0 zombie",
+                        "%Cpu(s):  2.1 us,  0.6 sy,  0.0 ni, 97.0 id,  0.2 wa,  0.0 hi,  0.1 si,  0.0 st",
+                        "USER       TTY      FROM         LOGIN@   IDLE   JCPU   PCPU WHAT",
+                        f"{self.user:<10} pts/0    {self.source_ip:<12} 09:17    1:12   0.01s  0.01s bash",
+                    ]
+                )
+            return f"{self.user:<10} pts/0        2026-04-22 09:17 ({self.source_ip})"
+
+        if self._wildcard_pattern.search(normalized):
+            return self._wildcard_response(normalized)
 
         if normalized.startswith("ssh "):
             return "\n".join(
@@ -325,6 +370,74 @@ class SubAgent:
             )
 
         return f"bash: {normalized}: command completed with transient warnings in /var/log/syslog"
+
+    def _should_force_fallback(self, command: str, intent: dict[str, Any]) -> bool:
+        lowered = command.strip().lower()
+        prefixes = (
+            "pwd",
+            "whoami",
+            "hostname",
+            "id",
+            "uname",
+            "ls",
+            "cat ",
+            "env",
+            "printenv",
+            "ip addr",
+            "ifconfig",
+            "ps",
+            "ss ",
+            "netstat",
+            "find ",
+            "curl ",
+            "wget ",
+            "ssh ",
+            "clear",
+            "w",
+            "who",
+            "top",
+        )
+        if lowered in prefixes or lowered.startswith(prefixes):
+            return True
+        if self._dangerous_pattern.search(lowered):
+            return True
+        if self._package_pattern.search(lowered):
+            return True
+        if self._identity_pattern.match(lowered):
+            return True
+        if self._wildcard_pattern.search(command):
+            return True
+        return intent.get("category") in {"credential_access", "tool_transfer", "cloud_recon"}
+
+    def _response_violates_guardrails(self, command: str, response: str) -> bool:
+        lowered_command = command.lower()
+        lowered_response = response.lower()
+        if self._dangerous_pattern.search(lowered_command):
+            return any(
+                token in lowered_response
+                for token in ("removed", "deleted", "formatted", "rebooting", "shutdown", "wiped")
+            )
+        if self._identity_pattern.match(lowered_command):
+            return "root" in lowered_response or "pts/1" in lowered_response
+        if self._wildcard_pattern.search(command):
+            return any(token in lowered_response for token in ("/boot", "/root", "/lib/modules", "/sys"))
+        return False
+
+    def _wildcard_response(self, command: str) -> str:
+        lowered = command.lower()
+        if lowered.startswith("echo /"):
+            return "/bin /etc /home /srv /tmp /var"
+        if lowered.startswith("echo "):
+            if self.cwd == "/srv/backup":
+                return "db.env export-2026-04-18.tar.gz id_rsa sync-oss.sh"
+            if self.cwd == "/var/tmp":
+                return "backup.sh cache.db handoff.txt logs tmp"
+            return "bin etc home srv tmp var"
+        if self.cwd == "/srv/backup":
+            return "db.env\nexport-2026-04-18.tar.gz\nid_rsa\nsync-oss.sh"
+        if self.cwd == "/var/tmp":
+            return "backup.sh\ncache.db\nhandoff.txt\nlogs\ntmp"
+        return "bin\netc\nhome\nsrv\ntmp\nvar"
 
     def _update_cwd(self, command: str) -> str:
         target = command[3:].strip()

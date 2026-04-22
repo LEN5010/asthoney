@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Threat Situational Awareness</title>
+  <style>
+    :root {
+      --bg: #09111d;
+      --panel: rgba(15, 25, 42, 0.92);
+      --panel-border: rgba(110, 137, 173, 0.18);
+      --text: #e6eef8;
+      --muted: #8fa3bf;
+      --accent: #4fd1c5;
+      --accent-2: #ff8f6b;
+      --danger: #ff5d73;
+      --shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "SF Mono", "JetBrains Mono", "IBM Plex Mono", monospace;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(79, 209, 197, 0.14), transparent 28%),
+        radial-gradient(circle at top right, rgba(255, 143, 107, 0.16), transparent 22%),
+        linear-gradient(145deg, #050913 0%, #0c1626 55%, #09111d 100%);
+    }
+
+    .shell {
+      width: min(1280px, calc(100vw - 40px));
+      margin: 24px auto;
+      padding: 28px;
+      border: 1px solid var(--panel-border);
+      border-radius: 24px;
+      background: rgba(6, 12, 22, 0.74);
+      backdrop-filter: blur(16px);
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      align-items: flex-end;
+      margin-bottom: 24px;
+    }
+
+    .title {
+      font-size: clamp(24px, 4vw, 40px);
+      line-height: 1.05;
+      letter-spacing: 0.02em;
+      margin: 0;
+    }
+
+    .subtitle {
+      margin: 10px 0 0;
+      color: var(--muted);
+      max-width: 720px;
+      line-height: 1.6;
+    }
+
+    .status-dot {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+    }
+
+    .status-dot::before {
+      content: "";
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--accent);
+      box-shadow: 0 0 18px rgba(79, 209, 197, 0.9);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 18px;
+    }
+
+    .card {
+      grid-column: span 12;
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 20px;
+      padding: 18px 18px 16px;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    }
+
+    .metric {
+      grid-column: span 6;
+      min-height: 160px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .metric::after {
+      content: "";
+      position: absolute;
+      inset: auto -20px -40px auto;
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(79, 209, 197, 0.15), transparent 70%);
+    }
+
+    .label {
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      margin-bottom: 12px;
+    }
+
+    .value {
+      font-size: clamp(40px, 6vw, 64px);
+      line-height: 1;
+      margin: 0;
+    }
+
+    .hint {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .wide {
+      grid-column: span 6;
+      min-height: 360px;
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .card-title {
+      font-size: 15px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin: 0;
+    }
+
+    .card-meta {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .list {
+      display: grid;
+      gap: 12px;
+      max-height: 420px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .item {
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 14px;
+      padding: 14px;
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .item-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .severity {
+      font-size: 11px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #fff;
+      background: rgba(255, 93, 115, 0.22);
+      border: 1px solid rgba(255, 93, 115, 0.35);
+    }
+
+    .payload {
+      color: var(--accent);
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .empty {
+      color: var(--muted);
+      padding: 24px 0;
+      text-align: center;
+      border: 1px dashed rgba(255, 255, 255, 0.08);
+      border-radius: 14px;
+    }
+
+    @media (max-width: 960px) {
+      .metric,
+      .wide {
+        grid-column: span 12;
+      }
+
+      .hero {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div>
+        <p class="status-dot">Threat Situational Awareness</p>
+        <h1 class="title">Generative Infinite Deception Maze</h1>
+        <p class="subtitle">实时监控多智能体蜜网中的连接活跃度、诱饵资产暴露面、MCP 告警与最新攻击载荷。</p>
+      </div>
+      <div class="meta" id="lastUpdated">等待首轮同步</div>
+    </section>
+
+    <section class="grid">
+      <article class="card metric">
+        <div class="label">活跃连接数</div>
+        <p class="value" id="activeConnections">0</p>
+        <div class="hint">当前保持中的 TCP / SSH 交互会话</div>
+      </article>
+
+      <article class="card metric">
+        <div class="label">蜜罐资产数</div>
+        <p class="value" id="honeypotAssets">0</p>
+        <div class="hint">Neo4j 全局状态图中的 Asset 节点总量</div>
+      </article>
+
+      <article class="card wide">
+        <div class="card-header">
+          <h2 class="card-title">实时告警列表</h2>
+          <span class="card-meta" id="alertCount">0 alerts</span>
+        </div>
+        <div class="list" id="alertsList">
+          <div class="empty">暂无告警</div>
+        </div>
+      </article>
+
+      <article class="card wide">
+        <div class="card-header">
+          <h2 class="card-title">最新捕获的攻击载荷</h2>
+          <span class="card-meta" id="payloadCount">0 payloads</span>
+        </div>
+        <div class="list" id="payloadsList">
+          <div class="empty">暂无载荷</div>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <script>
+    const activeConnectionsEl = document.getElementById("activeConnections");
+    const honeypotAssetsEl = document.getElementById("honeypotAssets");
+    const alertsListEl = document.getElementById("alertsList");
+    const payloadsListEl = document.getElementById("payloadsList");
+    const alertCountEl = document.getElementById("alertCount");
+    const payloadCountEl = document.getElementById("payloadCount");
+    const lastUpdatedEl = document.getElementById("lastUpdated");
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll("\"", "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function renderAlerts(alerts) {
+      alertCountEl.textContent = `${alerts.length} alerts`;
+      if (!alerts.length) {
+        alertsListEl.innerHTML = '<div class="empty">暂无告警</div>';
+        return;
+      }
+      alertsListEl.innerHTML = alerts.map((alert) => `
+        <article class="item">
+          <div class="item-top">
+            <strong>${escapeHtml(alert.alert_type || "unknown_alert")}</strong>
+            <span class="severity">${escapeHtml(alert.severity || "unknown")}</span>
+          </div>
+          <div class="meta">来源: ${escapeHtml(alert.source || "unknown")}<br>时间: ${escapeHtml(alert.created_at || "n/a")}</div>
+          <div class="payload">${escapeHtml(JSON.stringify(alert.details || {}, null, 2))}</div>
+        </article>
+      `).join("");
+    }
+
+    function renderPayloads(payloads) {
+      payloadCountEl.textContent = `${payloads.length} payloads`;
+      if (!payloads.length) {
+        payloadsListEl.innerHTML = '<div class="empty">暂无载荷</div>';
+        return;
+      }
+      payloadsListEl.innerHTML = payloads.map((payload) => `
+        <article class="item">
+          <div class="item-top">
+            <strong>${escapeHtml(payload.hostname || payload.asset_id || "unknown_asset")}</strong>
+            <span class="meta">${escapeHtml(payload.protocol || "unknown")}</span>
+          </div>
+          <div class="meta">来源: ${escapeHtml(payload.source_ip || "unknown")}<br>时间: ${escapeHtml(payload.created_at || "n/a")}</div>
+          <div class="payload">${escapeHtml(payload.payload || "")}</div>
+        </article>
+      `).join("");
+    }
+
+    async function refresh() {
+      try {
+        const [statusResp, alertsResp, payloadsResp] = await Promise.all([
+          fetch("/status"),
+          fetch("/alerts"),
+          fetch("/payloads"),
+        ]);
+        const status = await statusResp.json();
+        const alerts = await alertsResp.json();
+        const payloads = await payloadsResp.json();
+
+        activeConnectionsEl.textContent = String(status.active_connections ?? 0);
+        honeypotAssetsEl.textContent = String(status.honeypot_assets ?? 0);
+        renderAlerts(alerts.alerts || []);
+        renderPayloads(payloads.payloads || []);
+        lastUpdatedEl.textContent = `最近刷新 ${new Date().toLocaleString("zh-CN", { hour12: false })}`;
+      } catch (error) {
+        lastUpdatedEl.textContent = `刷新失败: ${error}`;
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

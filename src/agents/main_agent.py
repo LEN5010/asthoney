@@ -19,6 +19,7 @@ class MazeState(TypedDict, total=False):
     route: str
     target_asset: dict[str, Any]
     response: str
+    prompt: str
     close: bool
 
 
@@ -210,6 +211,7 @@ class MainAgent:
             self.active_sub_agents.pop(state["session_id"], None)
         return {
             "response": str(result["response"]),
+            "prompt": str(result.get("prompt", sub_agent.prompt)),
             "close": bool(result.get("close", False)),
             "target_asset": sub_agent.asset_snapshot,
         }

@@ -16,6 +16,7 @@ class TrafficEngine:
         self.main_agent = main_agent
         self.logger = logging.getLogger(self.__class__.__name__)
         self.servers: list[asyncio.AbstractServer] = []
+        self.active_connection_count = 0
 
     async def start(self) -> None:
         protocols = self.settings.honeypot_protocol_list
@@ -49,8 +50,10 @@ class TrafficEngine:
         destination_port = int(sockname[1])
         session_id = str(uuid4())
         entry_asset_id = f"edge:{protocol}:{destination_port}"
-        prompt = self.settings.honeypot_write_prompt
+        active_prompt = self.settings.honeypot_write_prompt
         close_after_write = False
+        prompt_locked = False
+        self.active_connection_count += 1
 
         self.logger.info(
             "Accepted %s session %s from %s to port %s",
@@ -67,7 +70,7 @@ class TrafficEngine:
                 if client_banner:
                     self.logger.debug("Client %s banner: %s", source_ip, client_banner.strip())
                 await self._write_raw(writer, b"Authorized access only.\r\n")
-                await self._write_raw(writer, prompt.encode("utf-8"))
+                await self._write_raw(writer, active_prompt.encode("utf-8"))
             else:
                 await self._write_line(writer, "220 maze-tcp edge ready")
 
@@ -77,7 +80,7 @@ class TrafficEngine:
                     break
                 payload = raw.strip()
                 if not payload:
-                    await self._write_raw(writer, prompt.encode("utf-8"))
+                    await self._write_raw(writer, active_prompt.encode("utf-8"))
                     continue
 
                 result = await self.main_agent.handle_payload(
@@ -92,14 +95,14 @@ class TrafficEngine:
                 )
                 response = str(result.get("response", ""))
                 close_after_write = bool(result.get("close", False))
+                prompt_override = result.get("prompt")
+                if isinstance(prompt_override, str) and prompt_override:
+                    active_prompt = prompt_override
+                    prompt_locked = True
 
                 if response:
-                    await self._write_line(writer, response)
+                    await self._write_response(writer, response)
                 if not close_after_write:
-                    active_prompt = prompt
-                    target_asset = result.get("target_asset")
-                    if target_asset:
-                        active_prompt = f"svc-backup@{target_asset.get('hostname')}:/var/tmp$ "
                     await self._write_raw(writer, active_prompt.encode("utf-8"))
                 else:
                     break
@@ -114,6 +117,9 @@ class TrafficEngine:
             writer.close()
             with suppress(Exception):
                 await writer.wait_closed()
+            self.active_connection_count = max(0, self.active_connection_count - 1)
+            if prompt_locked:
+                self.logger.debug("Released locked prompt for session %s", session_id)
             self.logger.info("Closed session %s from %s", session_id, source_ip)
 
     async def _safe_readline(self, reader: asyncio.StreamReader) -> str | None:
@@ -133,6 +139,12 @@ class TrafficEngine:
             message = f"{message}\n"
         await self._write_raw(writer, message.encode("utf-8"))
 
+    async def _write_response(self, writer: asyncio.StreamWriter, message: str) -> None:
+        if message.startswith("\033"):
+            await self._write_raw(writer, message.encode("utf-8"))
+            return
+        await self._write_line(writer, message)
+
     async def _write_raw(self, writer: asyncio.StreamWriter, payload: bytes) -> None:
         writer.write(payload)
         await writer.drain()
@@ -144,3 +156,6 @@ class TrafficEngine:
                 host, port = sock.getsockname()[:2]
                 listeners.append({"host": host, "port": port})
         return listeners
+
+    def metrics_snapshot(self) -> dict[str, int]:
+        return {"active_connections": self.active_connection_count}
