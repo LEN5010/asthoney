@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from contextlib import suppress
 from typing import Any
 from uuid import uuid4
@@ -53,6 +54,7 @@ class TrafficEngine:
         active_prompt = self.settings.honeypot_write_prompt
         close_after_write = False
         prompt_locked = False
+        entry_blank_prompt_rendered = True
         self.active_connection_count += 1
 
         self.logger.info(
@@ -78,10 +80,13 @@ class TrafficEngine:
                 raw = await self._safe_readline(reader)
                 if raw is None:
                     break
-                payload = raw.strip()
+                payload = self._sanitize_input(raw)
                 if not payload:
-                    await self._write_raw(writer, active_prompt.encode("utf-8"))
+                    if prompt_locked or not entry_blank_prompt_rendered:
+                        await self._write_raw(writer, active_prompt.encode("utf-8"))
+                        entry_blank_prompt_rendered = True
                     continue
+                entry_blank_prompt_rendered = False
 
                 result = await self.main_agent.handle_payload(
                     {
@@ -104,6 +109,7 @@ class TrafficEngine:
                     await self._write_response(writer, response)
                 if not close_after_write:
                     await self._write_raw(writer, active_prompt.encode("utf-8"))
+                    entry_blank_prompt_rendered = True
                 else:
                     break
         except ConnectionResetError:
@@ -148,6 +154,13 @@ class TrafficEngine:
     async def _write_raw(self, writer: asyncio.StreamWriter, payload: bytes) -> None:
         writer.write(payload)
         await writer.drain()
+
+    def _sanitize_input(self, raw: str) -> str:
+        without_ansi = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", raw)
+        without_controls = "".join(
+            char for char in without_ansi if char in {"\t", "\n", "\r"} or ord(char) >= 32
+        )
+        return without_controls.strip()
 
     def listener_summary(self) -> list[dict[str, Any]]:
         listeners: list[dict[str, Any]] = []

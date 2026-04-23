@@ -40,6 +40,9 @@
             <h1 class="content-title">SSH 会话视图</h1>
             <div class="content-subtitle"></div>
           </div>
+          <div class="topbar-right">
+            <button class="link-button" id="purgeHistoryBtn" type="button">清空历史</button>
+          </div>
         </div>
 
         <section class="panel-grid">
@@ -74,6 +77,7 @@
     const sessionRowsEl = document.getElementById("sessionRows");
     const sessionCountEl = document.getElementById("sessionCount");
     const lastUpdatedEl = document.getElementById("lastUpdated");
+    const purgeHistoryBtn = document.getElementById("purgeHistoryBtn");
 
     function renderSessions(sessions) {
       sessionCountEl.textContent = `${sessions.length} sessions`;
@@ -104,6 +108,29 @@
         lastUpdatedEl.textContent = `刷新失败: ${error}`;
       }
     }
+
+    purgeHistoryBtn.addEventListener("click", async () => {
+      const accepted = window.confirm("这会清空已有会话、告警、动作和动态诱饵资产，是否继续？");
+      if (!accepted) return;
+      purgeHistoryBtn.disabled = true;
+      purgeHistoryBtn.textContent = "清理中";
+      try {
+        const resp = await fetch("/history/purge", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ confirm: true }),
+        });
+        const payload = await resp.json();
+        if (!payload.ok) throw new Error(payload.message || "清理失败");
+        await refresh();
+        lastUpdatedEl.textContent = `历史已清空 ${new Date().toLocaleString("zh-CN", { hour12: false })}`;
+      } catch (error) {
+        lastUpdatedEl.textContent = `清理失败: ${error}`;
+      } finally {
+        purgeHistoryBtn.disabled = false;
+        purgeHistoryBtn.textContent = "清空历史";
+      }
+    });
 
     refresh();
     setInterval(refresh, 5000);

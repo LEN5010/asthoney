@@ -120,6 +120,7 @@
 
     let transcript = [];
     let replayIndex = 0;
+    let renderedReplayIndex = 0;
     let replayTimer = null;
     let replaySpeed = 700;
 
@@ -139,13 +140,28 @@
       `;
     }
 
+    function appendReplayItems(items) {
+      if (!items.length) return;
+      terminalScreenEl.insertAdjacentHTML("beforeend", items.map(buildTerminalLine).join(""));
+      terminalScreenEl.scrollTop = terminalScreenEl.scrollHeight;
+    }
+
     function renderReplayFrame() {
       if (!transcript.length) {
         terminalScreenEl.innerHTML = '<div class="empty-state">暂无对话数据</div>';
         return;
       }
-      terminalScreenEl.innerHTML = transcript.slice(0, replayIndex).map(buildTerminalLine).join("");
-      terminalScreenEl.scrollTop = terminalScreenEl.scrollHeight;
+      if (replayIndex < renderedReplayIndex) {
+        terminalScreenEl.innerHTML = "";
+        renderedReplayIndex = 0;
+      }
+      if (replayIndex === 0) {
+        terminalScreenEl.innerHTML = "";
+        renderedReplayIndex = 0;
+        return;
+      }
+      appendReplayItems(transcript.slice(renderedReplayIndex, replayIndex));
+      renderedReplayIndex = replayIndex;
     }
 
     function stopReplay() {
@@ -179,6 +195,7 @@
     function resetReplay() {
       stopReplay();
       replayIndex = 0;
+      renderedReplayIndex = 0;
       replayMetaEl.textContent = `0/${transcript.length} events`;
       renderReplayFrame();
     }
@@ -224,18 +241,25 @@
       `).join("");
     }
 
+    async function loadAnalysis() {
+      try {
+        const analysisResp = await fetch(`/sessions/${encodeURIComponent(sessionId)}/analysis`);
+        const analysis = await analysisResp.json();
+        renderAnalysis(analysis);
+      } catch (error) {
+        analysisSourceEl.textContent = "error";
+        analysisCardEl.innerHTML = `<div class="empty-state">AI 分析加载失败: ${escapeHtml(String(error))}</div>`;
+      }
+    }
+
     async function loadSession() {
       if (!sessionId) {
         sessionMetaEl.textContent = "缺少 session_id 参数";
         return;
       }
       try {
-        const [detailResp, analysisResp] = await Promise.all([
-          fetch(`/sessions/${encodeURIComponent(sessionId)}`),
-          fetch(`/sessions/${encodeURIComponent(sessionId)}/analysis`),
-        ]);
+        const detailResp = await fetch(`/sessions/${encodeURIComponent(sessionId)}`);
         const detail = await detailResp.json();
-        const analysis = await analysisResp.json();
         const session = detail.session || {};
         transcript = (detail.transcript || []).map((item, index, items) => {
           if (item.direction === "attacker_to_maze") {
@@ -249,8 +273,8 @@
         sessionMetaEl.textContent = `${session.session_id || "unknown"} | ${session.source_ip || "unknown"} | ${session.entry_hostname || session.entry_asset_id || "unknown"}`;
         replayMetaEl.textContent = `0/${transcript.length} events`;
         renderReplayFrame();
-        renderAnalysis(analysis);
         renderIntents(detail.intents || []);
+        void loadAnalysis();
       } catch (error) {
         sessionMetaEl.textContent = `加载失败: ${error}`;
       }

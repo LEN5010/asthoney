@@ -39,6 +39,9 @@ class MainAgent:
         self.logger = logging.getLogger(self.__class__.__name__)
         self.active_sub_agents: dict[str, SubAgent] = {}
         self.session_assets: dict[str, str] = {}
+        self.session_control_flags: set[str] = set()
+        self.quarantined_sources: set[str] = set()
+        self.mcp_trap_hits = 0
         self.graph = self._build_state_graph()
 
     async def bootstrap(self) -> None:
@@ -47,6 +50,12 @@ class MainAgent:
     async def close(self) -> None:
         self.active_sub_agents.clear()
         self.session_assets.clear()
+        self.session_control_flags.clear()
+        self.quarantined_sources.clear()
+
+    async def reset_runtime_state(self) -> None:
+        await self.close()
+        self.mcp_trap_hits = 0
 
     async def handle_payload(self, event: dict[str, Any]) -> dict[str, Any]:
         session_id = str(event["session_id"])
@@ -102,9 +111,19 @@ class MainAgent:
                 payload=response_text,
                 prompt=response_prompt,
             )
+        controls = await self._run_preemptive_controls(
+            session_id=session_id,
+            source_ip=source_ip,
+            current_asset_id=response_asset_id,
+            event=event,
+            result=result,
+        )
         if result.get("close"):
             self.active_sub_agents.pop(session_id, None)
             self.session_assets.pop(session_id, None)
+            self._release_session_controls(session_id)
+        if controls:
+            result["controls"] = controls
         return dict(result)
 
     async def handle_mcp_trap(
@@ -116,23 +135,24 @@ class MainAgent:
         session_id: str | None = None,
         agent_id: str | None = None,
     ) -> dict[str, Any]:
+        self.mcp_trap_hits += 1
         alert = await self.graph_db.record_alert(
-            alert_type="mcp_trap_invocation",
+            alert_type="agent_oriented_mcp_trap",
             severity="critical",
             source=source,
             details={
                 "tool_name": tool_name,
                 "arguments": arguments,
                 "agent_id": agent_id or "unknown",
+                "trap_class": "agent_oriented_trap",
+                "verdict": "autonomous_access_policy_violation",
             },
             session_id=session_id,
         )
-        action = None
-        if self.settings.preemptive_action_mode in {"simulate", "enforce"}:
-            action = await self.graph_db.quarantine_source(
-                source,
-                f"MCP trap invoked via {tool_name}",
-            )
+        action = await self._quarantine_source_once(
+            source,
+            f"MCP trap invoked via {tool_name}",
+        )
         return {"alert": alert, "action": action}
 
     async def status(self) -> dict[str, Any]:
@@ -140,6 +160,9 @@ class MainAgent:
         return {
             "active_sessions": len(self.active_sub_agents),
             "active_assets": len(self.session_assets),
+            "preemptive_controls": len(self.session_control_flags),
+            "quarantined_sources": len(self.quarantined_sources),
+            "mcp_trap_hits": self.mcp_trap_hits,
             "dashscope_configured": self.dashscope_client.is_configured,
             "recent_alerts": alerts,
         }
@@ -168,6 +191,38 @@ class MainAgent:
         except (DashScopeInvocationError, ValueError, KeyError, json.JSONDecodeError):
             self.logger.warning("Falling back to heuristic analysis for session %s", session_id)
             return heuristic
+
+    async def trigger_session_analysis_controls(self, session_id: str) -> dict[str, Any]:
+        detail = await self.graph_db.session_detail(session_id)
+        analysis = await self.analyze_session(session_id)
+        session = detail.get("session", {})
+        source_ip = str(session.get("source_ip", "unknown"))
+        controls: dict[str, Any] = {"alerts": [], "actions": []}
+
+        if analysis.get("likely_non_human_test_agent"):
+            flag = f"{session_id}:analysis:non_human"
+            if flag not in self.session_control_flags:
+                self.session_control_flags.add(flag)
+                alert = await self.graph_db.record_alert(
+                    alert_type="suspected_non_human_test_agent",
+                    severity="high",
+                    source=source_ip,
+                    details={
+                        "session_id": session_id,
+                        "objective": analysis.get("objective", ""),
+                        "summary": analysis.get("summary", ""),
+                        "reasons": analysis.get("likely_non_human_reasons", []),
+                    },
+                    session_id=session_id,
+                )
+                controls["alerts"].append(alert)
+                action = await self._quarantine_source_once(
+                    source_ip,
+                    "Session analysis classified source as likely non-human test agent",
+                )
+                if action:
+                    controls["actions"].append(action)
+        return controls
 
     def _build_state_graph(self):
         workflow = StateGraph(MazeState)
@@ -383,14 +438,6 @@ class MainAgent:
                 "requires_subagent": False,
             }
 
-        if any(token in normalized for token in ("uname", "whoami", "id", "ls", "pwd", "find ", "cat ", "env", "ps ", "netstat", "ss ")):
-            return {
-                "category": "discovery",
-                "confidence": 0.8,
-                "summary": "interactive shell discovery behavior",
-                "requires_subagent": True,
-            }
-
         if any(token in normalized for token in ("curl ", "wget ", "scp ", "tftp ")):
             return {
                 "category": "tool_transfer",
@@ -412,6 +459,22 @@ class MainAgent:
                 "category": "cloud_recon",
                 "confidence": 0.88,
                 "summary": "cloud or container control-plane recon",
+                "requires_subagent": True,
+            }
+
+        if any(token in normalized for token in ("tar ", "zip ", "sqlite", "mysqldump", "pg_dump", "cp /srv")):
+            return {
+                "category": "collection",
+                "confidence": 0.84,
+                "summary": "data collection or staging behavior",
+                "requires_subagent": True,
+            }
+
+        if any(token in normalized for token in ("uname", "whoami", "id", "ls", "pwd", "find ", "cat ", "env", "ps ", "netstat", "ss ")):
+            return {
+                "category": "discovery",
+                "confidence": 0.8,
+                "summary": "interactive shell discovery behavior",
                 "requires_subagent": True,
             }
 
@@ -496,6 +559,87 @@ class MainAgent:
             else:
                 payload[key] = [str(item) for item in value]
         return payload
+
+    async def _run_preemptive_controls(
+        self,
+        *,
+        session_id: str,
+        source_ip: str,
+        current_asset_id: str,
+        event: dict[str, Any],
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        intent = result.get("intent") or {}
+        category = str(intent.get("category", "unknown"))
+        severity = self._intent_severity(category)
+        controls: dict[str, Any] = {"alerts": [], "actions": []}
+
+        if self._severity_meets_threshold(severity):
+            flag = f"{session_id}:intent:{category}"
+            if flag not in self.session_control_flags:
+                self.session_control_flags.add(flag)
+                alert = await self.graph_db.record_alert(
+                    alert_type="high_risk_intent_detected",
+                    severity=severity,
+                    source=source_ip,
+                    details={
+                        "session_id": session_id,
+                        "asset_id": current_asset_id,
+                        "category": category,
+                        "summary": str(intent.get("summary", "")),
+                        "target_ip": intent.get("target_ip"),
+                        "protocol": event.get("protocol"),
+                        "payload": event.get("payload"),
+                        "control_plane": "preemptive_loop",
+                    },
+                    session_id=session_id,
+                )
+                controls["alerts"].append(alert)
+
+        if category in {"lateral_movement", "credential_access", "tool_transfer"}:
+            action = await self._quarantine_source_once(
+                source_ip,
+                f"Preemptive containment for {category} observed in session {session_id}",
+            )
+            if action:
+                controls["actions"].append(action)
+
+        if await self._should_flag_non_human(session_id):
+            flag = f"{session_id}:intent:non_human"
+            if flag not in self.session_control_flags:
+                self.session_control_flags.add(flag)
+                detail = await self.graph_db.session_detail(session_id)
+                reasons = self._non_human_reasons(
+                    [
+                        str(item.get("payload", "")).strip()
+                        for item in detail.get("transcript", [])
+                        if item.get("direction") == "attacker_to_maze" and str(item.get("payload", "")).strip()
+                    ],
+                    detail.get("transcript", []),
+                )
+                alert = await self.graph_db.record_alert(
+                    alert_type="suspected_non_human_test_agent",
+                    severity="high",
+                    source=source_ip,
+                    details={
+                        "session_id": session_id,
+                        "asset_id": current_asset_id,
+                        "reasons": reasons,
+                        "control_plane": "preemptive_loop",
+                    },
+                    session_id=session_id,
+                )
+                controls["alerts"].append(alert)
+                action = await self._quarantine_source_once(
+                    source_ip,
+                    f"Source classified as likely non-human test agent in session {session_id}",
+                )
+                if action:
+                    controls["actions"].append(action)
+
+        if controls["alerts"] or controls["actions"]:
+            return controls
+        return {}
 
     def _heuristic_analysis(self, detail: dict[str, Any]) -> dict[str, Any]:
         transcript = detail.get("transcript", [])
@@ -595,6 +739,51 @@ class MainAgent:
         if likely_non_human:
             actions.append("将该来源导入面向智能体扫描器的扩展认知欺骗路径。")
         return actions
+
+    async def _should_flag_non_human(self, session_id: str) -> bool:
+        detail = await self.graph_db.session_detail(session_id)
+        transcript = detail.get("transcript", [])
+        commands = [
+            str(item.get("payload", "")).strip()
+            for item in transcript
+            if item.get("direction") == "attacker_to_maze" and str(item.get("payload", "")).strip()
+        ]
+        if len(commands) < 4:
+            return False
+        return self._is_likely_non_human_agent(commands, transcript)
+
+    async def _quarantine_source_once(self, source: str, reason: str) -> dict[str, Any] | None:
+        if self.settings.preemptive_action_mode not in {"simulate", "enforce"}:
+            return None
+        if source in self.quarantined_sources:
+            return None
+        action = await self.graph_db.quarantine_source(source, reason)
+        self.quarantined_sources.add(source)
+        return action
+
+    def _release_session_controls(self, session_id: str) -> None:
+        self.session_control_flags = {
+            key for key in self.session_control_flags if not key.startswith(f"{session_id}:")
+        }
+
+    def _intent_severity(self, category: str) -> str:
+        severity_map = {
+            "credential_access": "critical",
+            "lateral_movement": "critical",
+            "tool_transfer": "high",
+            "cloud_recon": "high",
+            "collection": "high",
+            "discovery": "medium",
+            "interactive_shell": "medium",
+            "generic_probe": "low",
+            "idle": "low",
+        }
+        return severity_map.get(category, "medium")
+
+    def _severity_meets_threshold(self, severity: str) -> bool:
+        order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+        threshold = str(self.settings.alert_severity_threshold).lower()
+        return order.get(severity.lower(), 1) >= order.get(threshold, 2)
 
     def _has_testing_sequence(self, commands: list[str]) -> bool:
         probes = {"whoami", "pwd", "ls", "w", "who", "clear", "apt", "apt-get update", "echo /*", "echo /etc/*", "root", "sudo", "su"}

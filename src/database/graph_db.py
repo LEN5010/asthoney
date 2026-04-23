@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from typing import Any
@@ -274,12 +275,37 @@ class GraphDB:
         session_id: str,
         intent: dict[str, Any],
     ) -> dict[str, Any]:
-        target_ip = str(intent.get("target_ip") or self._derive_ip(intent))
-        target_hostname = str(intent.get("target_hostname") or self._derive_hostname(target_ip, intent))
-        target_role = str(intent.get("target_role") or self._derive_role(intent))
+        target_ip = str(intent.get("target_ip") or self._derive_ip(intent, session_id, source_asset_id))
         target_asset_id = f"asset:{target_ip}"
-        persona = self._derive_persona(intent)
+        existing_asset = await self.fetch_asset(target_asset_id)
+        target_hostname = str(
+            intent.get("target_hostname")
+            or (existing_asset or {}).get("hostname")
+            or self._derive_hostname(target_ip, intent)
+        )
+        target_role = str(
+            (intent.get("target_role") or self._derive_role(intent))
+            if existing_asset is None
+            else existing_asset.get("asset_type", self._derive_role(intent))
+        )
+        persona = str(
+            (existing_asset or {}).get("persona")
+            or self._derive_persona(intent)
+        )
         lure = self._derive_lure(intent)
+        existing_metadata = dict((existing_asset or {}).get("metadata", {}))
+        synthesis_metadata = {
+            **existing_metadata,
+            "lure": existing_metadata.get("lure", lure),
+            "jit_synthesized": True,
+            "synthesized_by": "main_agent",
+            "source_asset_id": source_asset_id,
+            "session_id": session_id,
+            "intent_category": intent.get("category", "unknown"),
+            "intent_confidence": float(intent.get("confidence", 0.0)),
+            "synthesis_mode": "just_in_time",
+            "cognitive_stage": self._derive_cognitive_stage(intent),
+        }
 
         await self.upsert_asset(
             asset_id=target_asset_id,
@@ -288,18 +314,20 @@ class GraphDB:
             hostname=target_hostname,
             persona=persona,
             exposure_level="high",
-            metadata={
-                "lure": lure,
-                "synthesized_by": "main_agent",
-                "intent_category": intent.get("category", "unknown"),
-            },
+            metadata=synthesis_metadata,
         )
         await self.link_assets(
             from_asset_id=source_asset_id,
             to_asset_id=target_asset_id,
             vector=intent.get("category", "observed_move"),
             confidence=float(intent.get("confidence", 0.8)),
-            metadata={"session_id": session_id},
+            metadata={
+                "session_id": session_id,
+                "jit_synthesized": True,
+                "synthesis_mode": "just_in_time",
+                "source_asset_id": source_asset_id,
+                "intent_summary": intent.get("summary", "unknown"),
+            },
         )
         query = """
         MATCH (s:Session {session_id: $session_id})
@@ -316,6 +344,27 @@ class GraphDB:
             {"session_id": session_id, "target_asset_id": target_asset_id},
         )
         return self._hydrate_asset(record["asset"])
+
+    async def fetch_asset(self, asset_id: str) -> dict[str, Any] | None:
+        query = """
+        MATCH (a:Asset {asset_id: $asset_id})
+        RETURN a {
+            .*,
+            metadata: a.metadata_json
+        } AS asset
+        """
+        if self._driver is None:
+            raise RuntimeError("Neo4j driver is not initialized")
+        try:
+            async with self._driver.session(database=self.settings.neo4j_database) as session:
+                cursor = await session.run(query, {"asset_id": asset_id})
+                record = await cursor.single()
+                if record is None:
+                    return None
+                return self._hydrate_asset(record["asset"])
+        except Neo4jError:
+            self.logger.exception("Neo4j query failed")
+            raise
 
     async def fetch_local_view(self, asset_id: str) -> dict[str, Any]:
         query = """
@@ -493,7 +542,8 @@ class GraphDB:
             ip_address: a.ip_address,
             asset_type: a.asset_type,
             persona: a.persona,
-            exposure_level: a.exposure_level
+            exposure_level: a.exposure_level,
+            metadata: a.metadata_json
         } AS asset
         ORDER BY a.asset_id ASC
         """
@@ -509,13 +559,22 @@ class GraphDB:
         """
         records_assets = await self._run_many(asset_query, {})
         records_edges = await self._run_many(edge_query, {})
-        assets = [self._normalize_graph_value(item["asset"]) for item in records_assets]
+        assets = [self._hydrate_asset(item["asset"]) for item in records_assets]
         edges = [self._normalize_graph_value(item["edge"]) for item in records_edges]
         type_counts: dict[str, int] = {}
+        jit_synthesized_assets = 0
         for asset in assets:
             asset_type = str(asset.get("asset_type", "unknown"))
             type_counts[asset_type] = type_counts.get(asset_type, 0) + 1
-        return {"assets": assets, "edges": edges, "type_counts": type_counts}
+            metadata = asset.get("metadata", {})
+            if isinstance(metadata, dict) and metadata.get("jit_synthesized"):
+                jit_synthesized_assets += 1
+        return {
+            "assets": assets,
+            "edges": edges,
+            "type_counts": type_counts,
+            "jit_synthesized_assets": jit_synthesized_assets,
+        }
 
     async def session_detail(self, session_id: str) -> dict[str, Any]:
         summary_query = """
@@ -570,6 +629,44 @@ class GraphDB:
             "intents": [self._normalize_graph_value(item["intent"]) for item in intent_records],
         }
 
+    async def session_transcript(self, session_id: str) -> list[dict[str, Any]]:
+        query = """
+        MATCH (s:Session {session_id: $session_id})-[:OBSERVED]->(e:Event)-[:TOUCHED]->(a:Asset)
+        RETURN {
+            event_id: e.event_id,
+            kind: e.kind,
+            direction: e.direction,
+            protocol: e.protocol,
+            payload: e.payload,
+            prompt: e.prompt,
+            source_ip: e.source_ip,
+            created_at: e.created_at,
+            asset_id: a.asset_id,
+            hostname: a.hostname
+        } AS item
+        ORDER BY e.created_at ASC
+        """
+        records = await self._run_many(query, {"session_id": session_id})
+        return [self._normalize_graph_value(item["item"]) for item in records]
+
+    async def session_intents(self, session_id: str) -> list[dict[str, Any]]:
+        query = """
+        MATCH (s:Session {session_id: $session_id})-[:EMITTED]->(i:Intent)-[:AGAINST]->(a:Asset)
+        RETURN {
+            intent_id: i.intent_id,
+            category: i.category,
+            confidence: i.confidence,
+            summary: i.summary,
+            raw_input: i.raw_input,
+            created_at: i.created_at,
+            asset_id: a.asset_id,
+            hostname: a.hostname
+        } AS intent
+        ORDER BY i.created_at ASC
+        """
+        records = await self._run_many(query, {"session_id": session_id})
+        return [self._normalize_graph_value(item["intent"]) for item in records]
+
     async def quarantine_source(self, source: str, reason: str) -> dict[str, Any]:
         action_id = str(uuid4())
         query = """
@@ -585,6 +682,62 @@ class GraphDB:
         """
         await self._run(query, {"action_id": action_id, "source": source, "reason": reason})
         return {"action_id": action_id, "kind": "quarantine", "source": source, "reason": reason}
+
+    async def recent_actions(self, limit: int = 20) -> list[dict[str, Any]]:
+        query = """
+        MATCH (a:Action)-[:CONTAINS]->(i:Identity)
+        RETURN {
+            action_id: a.action_id,
+            kind: a.kind,
+            reason: a.reason,
+            created_at: a.created_at,
+            source: i.identity_id
+        } AS action
+        ORDER BY a.created_at DESC
+        LIMIT $limit
+        """
+        records = await self._run_many(query, {"limit": limit})
+        return [self._normalize_graph_value(item["action"]) for item in records]
+
+    async def purge_history(self) -> dict[str, int]:
+        counts = {
+            "sessions": 0,
+            "events": 0,
+            "intents": 0,
+            "alerts": 0,
+            "actions": 0,
+            "identities": 0,
+            "jit_assets": 0,
+            "jit_edges": 0,
+        }
+
+        count_queries = {
+            "sessions": "MATCH (s:Session) RETURN count(s) AS total",
+            "events": "MATCH (e:Event) RETURN count(e) AS total",
+            "intents": "MATCH (i:Intent) RETURN count(i) AS total",
+            "alerts": "MATCH (a:Alert) RETURN count(a) AS total",
+            "actions": "MATCH (a:Action) RETURN count(a) AS total",
+            "identities": "MATCH (i:Identity) RETURN count(i) AS total",
+            "jit_assets": "MATCH (a:Asset) WHERE a.metadata_json CONTAINS '\"jit_synthesized\": true' RETURN count(a) AS total",
+            "jit_edges": "MATCH ()-[r:CAN_REACH]->() WHERE r.metadata_json CONTAINS '\"jit_synthesized\": true' RETURN count(r) AS total",
+        }
+        for key, query in count_queries.items():
+            record = await self._run_single(query, {})
+            counts[key] = int(record["total"])
+
+        delete_queries = [
+            "MATCH ()-[r:CAN_REACH]->() WHERE r.metadata_json CONTAINS '\"jit_synthesized\": true' DELETE r",
+            "MATCH (s:Session) DETACH DELETE s",
+            "MATCH (e:Event) DETACH DELETE e",
+            "MATCH (i:Intent) DETACH DELETE i",
+            "MATCH (a:Alert) DETACH DELETE a",
+            "MATCH (a:Action) DETACH DELETE a",
+            "MATCH (i:Identity) DETACH DELETE i",
+            "MATCH (a:Asset) WHERE a.metadata_json CONTAINS '\"jit_synthesized\": true' DETACH DELETE a",
+        ]
+        for query in delete_queries:
+            await self._run(query, {})
+        return counts
 
     async def _run(self, query: str, params: dict[str, Any]) -> None:
         if self._driver is None:
@@ -623,16 +776,20 @@ class GraphDB:
             self.logger.exception("Neo4j query failed")
             raise
 
-    def _derive_ip(self, intent: dict[str, Any]) -> str:
+    def _derive_ip(self, intent: dict[str, Any], session_id: str, source_asset_id: str) -> str:
         category = intent.get("category", "unknown")
         base_map = {
-            "lateral_movement": "10.0.5.2",
-            "credential_access": "10.0.6.14",
-            "collection": "10.0.7.21",
-            "tool_transfer": "10.0.8.7",
-            "cloud_recon": "10.0.9.11",
+            "lateral_movement": ("10.0.5.", 2),
+            "credential_access": ("10.0.6.", 10),
+            "collection": ("10.0.7.", 20),
+            "tool_transfer": ("10.0.8.", 30),
+            "cloud_recon": ("10.0.9.", 40),
         }
-        return base_map.get(category, "10.0.5.50")
+        subnet_prefix, minimum_host = base_map.get(category, ("10.0.5.", 50))
+        seed = f"{session_id}|{source_asset_id}|{category}|{intent.get('summary', '')}"
+        digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+        host_octet = minimum_host + (int(digest[:2], 16) % 120)
+        return f"{subnet_prefix}{host_octet}"
 
     def _derive_hostname(self, target_ip: str, intent: dict[str, Any]) -> str:
         category = intent.get("category", "unknown")
@@ -680,6 +837,18 @@ class GraphDB:
             "cloud_recon": "temporary RAM and STS audit tooling",
         }
         return lures.get(category, "partial internal topology and noisy service logs")
+
+    def _derive_cognitive_stage(self, intent: dict[str, Any]) -> str:
+        category = str(intent.get("category", "unknown"))
+        stage_map = {
+            "discovery": "environment_validation",
+            "credential_access": "secret_harvest",
+            "lateral_movement": "pivot_expansion",
+            "tool_transfer": "payload_staging",
+            "cloud_recon": "control_plane_enumeration",
+            "collection": "data_staging",
+        }
+        return stage_map.get(category, "interactive_probe")
 
     def _hydrate_asset(self, asset: dict[str, Any]) -> dict[str, Any]:
         hydrated = self._normalize_graph_value(dict(asset))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shlex
 from typing import Any
 
 from src.config import AppSettings, DashScopeClient, DashScopeInvocationError
@@ -204,10 +205,7 @@ class SubAgent:
 
         if self._dangerous_pattern.search(lowered):
             if lowered.startswith("rm"):
-                if len(normalized.split()) == 1:
-                    return "rm: missing operand"
-                blocked_target = normalized.split(maxsplit=1)[1]
-                return f"rm: cannot remove '{blocked_target}': Permission denied"
+                return self._rm_response(normalized)
             return f"{normalized.split()[0]}: Permission denied"
 
         if self._package_pattern.search(lowered):
@@ -257,11 +255,7 @@ class SubAgent:
             return f"Linux {hostname} 5.15.0-92-generic #102-Ubuntu SMP PREEMPT_DYNAMIC x86_64 GNU/Linux"
 
         if lowered == "ls" or lowered.startswith("ls "):
-            if self.cwd == "/var/tmp":
-                return "backup.sh  cache.db  handoff.txt  logs  tmp"
-            if self.cwd == "/srv/backup":
-                return "db.env  export-2026-04-18.tar.gz  id_rsa  sync-oss.sh"
-            return "bin  etc  home  srv  tmp  var"
+            return self._ls_response(normalized)
 
         if lowered.startswith("cd "):
             return ""
@@ -381,7 +375,8 @@ class SubAgent:
                 ]
             )
 
-        return f"bash: {normalized}: command completed with transient warnings in /var/log/syslog"
+        command_name = normalized.split()[0] if normalized.split() else normalized
+        return f"bash: {command_name}: command not found"
 
     def _should_force_fallback(self, command: str, intent: dict[str, Any]) -> bool:
         lowered = command.strip().lower()
@@ -440,18 +435,79 @@ class SubAgent:
     def _wildcard_response(self, command: str) -> str:
         lowered = command.lower()
         if lowered.startswith("echo /"):
-            return "/bin /etc /home /srv /tmp /var"
+            return "/bin /boot /dev /etc /home /opt /proc /run /srv /tmp /usr /var"
         if lowered.startswith("echo "):
             if self.cwd == "/srv/backup":
                 return "db.env export-2026-04-18.tar.gz id_rsa sync-oss.sh"
             if self.cwd == "/var/tmp":
                 return "backup.sh cache.db handoff.txt logs tmp"
-            return "bin etc home srv tmp var"
+            if self.cwd == "/":
+                return "bin boot dev etc home opt proc run srv tmp usr var"
+            return self._ls_response("ls").replace("  ", " ")
         if self.cwd == "/srv/backup":
             return "db.env\nexport-2026-04-18.tar.gz\nid_rsa\nsync-oss.sh"
         if self.cwd == "/var/tmp":
             return "backup.sh\ncache.db\nhandoff.txt\nlogs\ntmp"
-        return "bin\netc\nhome\nsrv\ntmp\nvar"
+        return self._ls_response("ls").replace("  ", "\n")
+
+    def _rm_response(self, command: str) -> str:
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            parts = command.split()
+        targets = [part for part in parts[1:] if not part.startswith("-")]
+        options = {part for part in parts[1:] if part.startswith("-")}
+        if not targets:
+            return "rm: missing operand"
+        if "/" in targets and any("r" in option for option in options):
+            return "\n".join(
+                [
+                    "rm: it is dangerous to operate recursively on '/'",
+                    "rm: use --no-preserve-root to override this failsafe",
+                ]
+            )
+        target = targets[0]
+        if target == "*":
+            visible = self._visible_entries(self.cwd)
+            target = visible[0] if visible else "*"
+        return f"rm: cannot remove '{target}': Permission denied"
+
+    def _ls_response(self, command: str) -> str:
+        path = self._ls_target_path(command)
+        entries = self._visible_entries(path)
+        if entries:
+            return "  ".join(entries)
+        return f"ls: cannot access '{path}': No such file or directory"
+
+    def _ls_target_path(self, command: str) -> str:
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            parts = command.split()
+        targets = [part for part in parts[1:] if not part.startswith("-")]
+        if not targets:
+            return self.cwd
+        target = targets[-1]
+        if target.startswith("/"):
+            return target.rstrip("/") or "/"
+        if self.cwd == "/":
+            return f"/{target}".rstrip("/")
+        return f"{self.cwd.rstrip('/')}/{target}".rstrip("/")
+
+    def _visible_entries(self, path: str) -> list[str]:
+        normalized = path.rstrip("/") or "/"
+        listings = {
+            "/": ["bin", "boot", "dev", "etc", "home", "lib", "lib64", "opt", "proc", "run", "sbin", "srv", "tmp", "usr", "var"],
+            "/var": ["backups", "cache", "lib", "local", "lock", "log", "mail", "opt", "run", "spool", "tmp"],
+            "/var/tmp": ["backup.sh", "cache.db", "handoff.txt", "logs", "tmp"],
+            "/srv": ["backup", "metrics", "www"],
+            "/srv/backup": ["db.env", "export-2026-04-18.tar.gz", "id_rsa", "sync-oss.sh"],
+            "/home": ["svc-backup"],
+            "/home/svc-backup": ["notes.txt", "tmp"],
+            "/etc": ["cron.d", "hosts", "passwd", "profile", "ssh", "systemd"],
+            "/tmp": ["systemd-private-9f2a", "sync.lock"],
+        }
+        return listings.get(normalized, [])
 
     def _update_cwd(self, command: str) -> str:
         target = command[3:].strip()

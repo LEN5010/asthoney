@@ -26,6 +26,10 @@ class SimulateRequest(BaseModel):
     session_id: str | None = Field(default=None, description="Optional synthetic session identifier")
 
 
+class PurgeHistoryRequest(BaseModel):
+    confirm: bool = Field(default=False, description="Safety confirmation flag")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -115,6 +119,12 @@ async def alerts(request: Request) -> dict[str, Any]:
     return {"alerts": recent_alerts}
 
 
+@app.get("/actions")
+async def actions(request: Request) -> dict[str, Any]:
+    recent_actions = await request.app.state.graph_db.recent_actions(limit=20)
+    return {"actions": recent_actions}
+
+
 @app.get("/payloads")
 async def payloads(request: Request) -> dict[str, Any]:
     recent_payloads = await request.app.state.graph_db.recent_payloads(limit=20)
@@ -137,9 +147,33 @@ async def session_detail(request: Request, session_id: str) -> dict[str, Any]:
     return await request.app.state.graph_db.session_detail(session_id)
 
 
+@app.get("/sessions/{session_id}/transcript")
+async def session_transcript(request: Request, session_id: str) -> dict[str, Any]:
+    return {"transcript": await request.app.state.graph_db.session_transcript(session_id)}
+
+
+@app.get("/sessions/{session_id}/intents")
+async def session_intents(request: Request, session_id: str) -> dict[str, Any]:
+    return {"intents": await request.app.state.graph_db.session_intents(session_id)}
+
+
 @app.get("/sessions/{session_id}/analysis")
 async def session_analysis(request: Request, session_id: str) -> dict[str, Any]:
     return await request.app.state.main_agent.analyze_session(session_id)
+
+
+@app.post("/sessions/{session_id}/analysis/controls")
+async def session_analysis_controls(request: Request, session_id: str) -> dict[str, Any]:
+    return await request.app.state.main_agent.trigger_session_analysis_controls(session_id)
+
+
+@app.post("/history/purge")
+async def purge_history(request: Request, body: PurgeHistoryRequest) -> dict[str, Any]:
+    if not body.confirm:
+        return {"ok": False, "message": "confirm=true is required"}
+    summary = await request.app.state.graph_db.purge_history()
+    await request.app.state.main_agent.reset_runtime_state()
+    return {"ok": True, "purged": summary}
 
 
 @app.post("/simulate")

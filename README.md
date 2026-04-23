@@ -42,6 +42,18 @@
 - `Web Dashboard` 提供态势总览、SSH 会话列表、单会话日志查看以及 AI 自动研判页面。
 - `AI Session Analysis` 基于 DashScope 对攻击者行为提炼战术手段、攻击目标，并评估是否疑似非真人测试 Agent；当模型不可用时自动退回启发式分析。
 
+## 三个演示创新点
+
+- `创新点一: Agent-Oriented Trap`
+  - 通过 `/mcp/tools`、`/mcp/.well-known/mcp-tools.json` 和 `/mcp/profile` 暴露一组对 Agentic AI 具有高语义诱惑性的工具。
+  - 一旦调用 `bypass_security_guardrails`、`extract_bulk_pii_database`、`override_RBAC_policies`，系统立即生成高置信告警并触发隔离动作模拟。
+- `创新点二: JIT 无限拓扑合成`
+  - 主智能体根据攻击者意图和会话上下文，在 `graph_db.py` 的 `synthesize_next_hop` 中即时合成新的诱饵资产与可达边。
+  - 新节点会附带 `jit_synthesized`、`session_id`、`cognitive_stage` 等图谱元数据，便于在 Neo4j 和前端面板中展示动态扩展的迷宫拓扑。
+- `创新点三: 抢占式防御闭环`
+  - 主智能体对每条会话流式执行意图分级，对横向移动、凭证探测、工具投递等行为自动产生日志、告警和隔离动作。
+  - 对会话级分析结果，可通过 `/sessions/{session_id}/analysis/controls` 触发“非真人测试 Agent”分析后联动控制。
+
 ## 本地运行
 
 1. 创建 Python 3.11+ 虚拟环境并安装依赖。
@@ -82,6 +94,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 curl http://127.0.0.1:8000/healthz
 curl http://127.0.0.1:8000/status
 curl http://127.0.0.1:8000/sessions
+curl http://127.0.0.1:8000/actions
 curl -X POST http://127.0.0.1:8000/simulate \
   -H 'Content-Type: application/json' \
   -d '{"payload":"ssh admin@10.0.5.2","protocol":"ssh","source_ip":"198.51.100.9","destination_port":2222}'
@@ -98,6 +111,7 @@ MCP 逻辑诱饵接口示例：
 
 ```bash
 curl http://127.0.0.1:8000/mcp/tools
+curl http://127.0.0.1:8000/mcp/profile
 curl -X POST http://127.0.0.1:8000/mcp/tools/bypass_security_guardrails \
   -H 'Content-Type: application/json' \
   -H 'x-agent-id: rogue-agent-01' \
@@ -116,6 +130,7 @@ curl -X POST http://127.0.0.1:8000/mcp/tools/bypass_security_guardrails \
 curl http://127.0.0.1:8000/sessions
 curl http://127.0.0.1:8000/sessions/<session_id>
 curl http://127.0.0.1:8000/sessions/<session_id>/analysis
+curl -X POST http://127.0.0.1:8000/sessions/<session_id>/analysis/controls
 ```
 
 `/sessions/<session_id>/analysis` 会输出：
