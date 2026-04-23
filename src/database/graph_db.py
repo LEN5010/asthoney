@@ -484,6 +484,39 @@ class GraphDB:
         records = await self._run_many(query, params)
         return [self._normalize_graph_value(item["session"]) for item in records]
 
+    async def graph_overview(self) -> dict[str, Any]:
+        asset_query = """
+        MATCH (a:Asset)
+        RETURN {
+            asset_id: a.asset_id,
+            hostname: a.hostname,
+            ip_address: a.ip_address,
+            asset_type: a.asset_type,
+            persona: a.persona,
+            exposure_level: a.exposure_level
+        } AS asset
+        ORDER BY a.asset_id ASC
+        """
+        edge_query = """
+        MATCH (src:Asset)-[r:CAN_REACH]->(dst:Asset)
+        RETURN {
+            from_asset_id: src.asset_id,
+            to_asset_id: dst.asset_id,
+            vector: r.vector,
+            confidence: r.confidence
+        } AS edge
+        ORDER BY src.asset_id ASC, dst.asset_id ASC
+        """
+        records_assets = await self._run_many(asset_query, {})
+        records_edges = await self._run_many(edge_query, {})
+        assets = [self._normalize_graph_value(item["asset"]) for item in records_assets]
+        edges = [self._normalize_graph_value(item["edge"]) for item in records_edges]
+        type_counts: dict[str, int] = {}
+        for asset in assets:
+            asset_type = str(asset.get("asset_type", "unknown"))
+            type_counts[asset_type] = type_counts.get(asset_type, 0) + 1
+        return {"assets": assets, "edges": edges, "type_counts": type_counts}
+
     async def session_detail(self, session_id: str) -> dict[str, Any]:
         summary_query = """
         MATCH (s:Session {session_id: $session_id})<-[:INITIATED]-(i:Identity)

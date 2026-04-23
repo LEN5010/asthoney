@@ -3,370 +3,316 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Threat Situational Awareness</title>
-  <style>
-    :root {
-      --bg: #09111d;
-      --panel: rgba(15, 25, 42, 0.92);
-      --panel-border: rgba(110, 137, 173, 0.18);
-      --text: #e6eef8;
-      --muted: #8fa3bf;
-      --accent: #4fd1c5;
-      --accent-2: #ff8f6b;
-      --danger: #ff5d73;
-      --shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
-    }
-
-    * {
-      box-sizing: border-box;
-    }
-
-    body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: "SF Mono", "JetBrains Mono", "IBM Plex Mono", monospace;
-      color: var(--text);
-      background:
-        radial-gradient(circle at top left, rgba(79, 209, 197, 0.14), transparent 28%),
-        radial-gradient(circle at top right, rgba(255, 143, 107, 0.16), transparent 22%),
-        linear-gradient(145deg, #050913 0%, #0c1626 55%, #09111d 100%);
-    }
-
-    .shell {
-      width: min(1280px, calc(100vw - 40px));
-      margin: 24px auto;
-      padding: 28px;
-      border: 1px solid var(--panel-border);
-      border-radius: 24px;
-      background: rgba(6, 12, 22, 0.74);
-      backdrop-filter: blur(16px);
-      box-shadow: var(--shadow);
-    }
-
-    .hero {
-      display: flex;
-      justify-content: space-between;
-      gap: 24px;
-      align-items: flex-end;
-      margin-bottom: 24px;
-    }
-
-    .title {
-      font-size: clamp(24px, 4vw, 40px);
-      line-height: 1.05;
-      letter-spacing: 0.02em;
-      margin: 0;
-    }
-
-    .subtitle {
-      margin: 10px 0 0;
-      color: var(--muted);
-      max-width: 720px;
-      line-height: 1.6;
-    }
-
-    .actions {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      margin-top: 18px;
-    }
-
-    .action-link {
-      text-decoration: none;
-      color: var(--text);
-      border: 1px solid rgba(79, 209, 197, 0.28);
-      background: rgba(79, 209, 197, 0.08);
-      padding: 10px 14px;
-      border-radius: 999px;
-      font-size: 13px;
-      letter-spacing: 0.04em;
-    }
-
-    .status-dot {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      color: var(--muted);
-      font-size: 13px;
-      text-transform: uppercase;
-      letter-spacing: 0.16em;
-    }
-
-    .status-dot::before {
-      content: "";
-      width: 10px;
-      height: 10px;
-      border-radius: 999px;
-      background: var(--accent);
-      box-shadow: 0 0 18px rgba(79, 209, 197, 0.9);
-    }
-
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(12, 1fr);
-      gap: 18px;
-    }
-
-    .card {
-      grid-column: span 12;
-      background: var(--panel);
-      border: 1px solid var(--panel-border);
-      border-radius: 20px;
-      padding: 18px 18px 16px;
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
-    }
-
-    .metric {
-      grid-column: span 6;
-      min-height: 160px;
-      position: relative;
-      overflow: hidden;
-    }
-
-    .metric::after {
-      content: "";
-      position: absolute;
-      inset: auto -20px -40px auto;
-      width: 120px;
-      height: 120px;
-      border-radius: 50%;
-      background: radial-gradient(circle, rgba(79, 209, 197, 0.15), transparent 70%);
-    }
-
-    .label {
-      font-size: 12px;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.16em;
-      margin-bottom: 12px;
-    }
-
-    .value {
-      font-size: clamp(40px, 6vw, 64px);
-      line-height: 1;
-      margin: 0;
-    }
-
-    .hint {
-      margin-top: 10px;
-      color: var(--muted);
-      font-size: 13px;
-    }
-
-    .wide {
-      grid-column: span 6;
-      min-height: 360px;
-    }
-
-    .card-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-      gap: 12px;
-      margin-bottom: 14px;
-    }
-
-    .card-title {
-      font-size: 15px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      margin: 0;
-    }
-
-    .card-meta {
-      font-size: 12px;
-      color: var(--muted);
-    }
-
-    .list {
-      display: grid;
-      gap: 12px;
-      max-height: 420px;
-      overflow: auto;
-      padding-right: 4px;
-    }
-
-    .item {
-      border: 1px solid rgba(255, 255, 255, 0.05);
-      border-radius: 14px;
-      padding: 14px;
-      background: rgba(255, 255, 255, 0.02);
-    }
-
-    .item-top {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      align-items: center;
-      margin-bottom: 10px;
-    }
-
-    .severity {
-      font-size: 11px;
-      padding: 4px 8px;
-      border-radius: 999px;
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
-      color: #fff;
-      background: rgba(255, 93, 115, 0.22);
-      border: 1px solid rgba(255, 93, 115, 0.35);
-    }
-
-    .payload {
-      color: var(--accent);
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-size: 13px;
-      line-height: 1.6;
-    }
-
-    .meta {
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.6;
-    }
-
-    .empty {
-      color: var(--muted);
-      padding: 24px 0;
-      text-align: center;
-      border: 1px dashed rgba(255, 255, 255, 0.08);
-      border-radius: 14px;
-    }
-
-    @media (max-width: 960px) {
-      .metric,
-      .wide {
-        grid-column: span 12;
-      }
-
-      .hero {
-        flex-direction: column;
-        align-items: flex-start;
-      }
-    }
-  </style>
+  <title>Maze Overview</title>
+  <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-  <main class="shell">
-    <section class="hero">
-      <div>
-        <p class="status-dot">Threat Situational Awareness</p>
-        <h1 class="title">Generative Infinite Deception Maze</h1>
-        <p class="subtitle">实时监控多智能体蜜网中的连接活跃度、诱饵资产暴露面、MCP 告警、攻击载荷，并跳转到逐条 SSH 会话日志与 AI 行为分析页面。</p>
-        <div class="actions">
-          <a class="action-link" href="/sessions/view">查看 SSH 会话日志</a>
-          <a class="action-link" href="/docs">查看 API 文档</a>
-        </div>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="topbar-left">
+        <button class="sidebar-toggle" data-sidebar-toggle>菜单</button>
+        <a class="brand" href="/">Generative Infinite Deception Maze</a>
       </div>
-      <div class="meta" id="lastUpdated">等待首轮同步</div>
-    </section>
+      <div class="topbar-right">
+        <span class="topbar-meta" id="lastUpdated">等待首轮同步</span>
+      </div>
+    </header>
 
-    <section class="grid">
-      <article class="card metric">
-        <div class="label">活跃连接数</div>
-        <p class="value" id="activeConnections">0</p>
-        <div class="hint">当前保持中的 TCP / SSH 交互会话</div>
-      </article>
-
-      <article class="card metric">
-        <div class="label">蜜罐资产数</div>
-        <p class="value" id="honeypotAssets">0</p>
-        <div class="hint">Neo4j 全局状态图中的 Asset 节点总量</div>
-      </article>
-
-      <article class="card wide">
-        <div class="card-header">
-          <h2 class="card-title">实时告警列表</h2>
-          <span class="card-meta" id="alertCount">0 alerts</span>
+    <div class="workspace">
+      <aside class="sidebar">
+        <div class="sidebar-group">
+          <div class="sidebar-label">Navigation</div>
+          <nav class="nav-list">
+            <a class="nav-link" data-nav="overview" href="/"><span>总体态势</span><span class="nav-badge">Graph</span></a>
+            <a class="nav-link" data-nav="sessions" href="/sessions/view"><span>SSH 会话</span><span class="nav-badge">Logs</span></a>
+            <a class="nav-link" data-nav="docs" href="/docs"><span>API 文档</span><span class="nav-badge">OpenAPI</span></a>
+          </nav>
         </div>
-        <div class="list" id="alertsList">
-          <div class="empty">暂无告警</div>
+        <div class="sidebar-group">
+          <div class="sidebar-label">Summary</div>
+          <div class="inline-meta" id="sidebarSummary"></div>
         </div>
-      </article>
+      </aside>
 
-      <article class="card wide">
-        <div class="card-header">
-          <h2 class="card-title">最新捕获的攻击载荷</h2>
-          <span class="card-meta" id="payloadCount">0 payloads</span>
+      <main class="content">
+        <div class="content-header">
+          <div>
+            <h1 class="content-title">总体态势感知</h1>
+            <div class="content-subtitle"></div>
+          </div>
+          <div class="topbar-right">
+            <a class="link-button" href="/sessions/view">进入 SSH 会话</a>
+          </div>
         </div>
-        <div class="list" id="payloadsList">
-          <div class="empty">暂无载荷</div>
-        </div>
-      </article>
-    </section>
-  </main>
 
+        <section class="panel-grid">
+          <article class="card span-4">
+            <div class="card-body">
+              <div class="card-title">Active Connections</div>
+              <p class="metric-value" id="activeConnections">0</p>
+              <div class="metric-label">当前维持中的 TCP / SSH 连接数</div>
+            </div>
+          </article>
+
+          <article class="card span-4">
+            <div class="card-body">
+              <div class="card-title">Honeypot Assets</div>
+              <p class="metric-value" id="honeypotAssets">0</p>
+              <div class="metric-label">Neo4j 图中已合成的资产节点数</div>
+            </div>
+          </article>
+
+          <article class="card span-4">
+            <div class="card-body">
+              <div class="card-title">Open Alerts</div>
+              <p class="metric-value" id="openAlerts">0</p>
+              <div class="metric-label">近期告警条目数量与高风险触发情况</div>
+            </div>
+          </article>
+
+          <article class="card span-8">
+            <div class="card-header">
+              <h2 class="card-title">Asset Graph</h2>
+              <span class="card-meta" id="graphMeta">0 assets</span>
+            </div>
+            <div class="card-body">
+              <div class="legend" id="legend"></div>
+              <svg class="graph-canvas" id="graphCanvas" viewBox="0 0 980 520" preserveAspectRatio="xMidYMid meet"></svg>
+            </div>
+          </article>
+
+          <article class="card span-4">
+            <div class="card-header">
+              <h2 class="card-title">Topology Mix</h2>
+              <span class="card-meta">Asset Types</span>
+            </div>
+            <div class="card-body">
+              <div class="stack" id="typeCounts">
+                <div class="empty-state">暂无资产分布</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="card span-6">
+            <div class="card-header">
+              <h2 class="card-title">Recent Alerts</h2>
+              <span class="card-meta" id="alertCount">0 alerts</span>
+            </div>
+            <div class="card-body">
+              <div class="stack" id="alertsList">
+                <div class="empty-state">暂无告警</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="card span-6">
+            <div class="card-header">
+              <h2 class="card-title">Recent SSH Sessions</h2>
+              <span class="card-meta" id="sessionCount">0 sessions</span>
+            </div>
+            <div class="card-body">
+              <div class="table">
+                <div class="table-head">
+                  <div>Session</div>
+                  <div>Source</div>
+                  <div>Commands</div>
+                  <div>Action</div>
+                </div>
+                <div id="sessionRows">
+                  <div class="empty-state">暂无 SSH 会话</div>
+                </div>
+              </div>
+            </div>
+          </article>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
   <script>
+    initLayout("overview");
+
     const activeConnectionsEl = document.getElementById("activeConnections");
     const honeypotAssetsEl = document.getElementById("honeypotAssets");
+    const openAlertsEl = document.getElementById("openAlerts");
     const alertsListEl = document.getElementById("alertsList");
-    const payloadsListEl = document.getElementById("payloadsList");
-    const alertCountEl = document.getElementById("alertCount");
-    const payloadCountEl = document.getElementById("payloadCount");
+    const sessionRowsEl = document.getElementById("sessionRows");
+    const sessionCountEl = document.getElementById("sessionCount");
     const lastUpdatedEl = document.getElementById("lastUpdated");
+    const alertCountEl = document.getElementById("alertCount");
+    const graphCanvasEl = document.getElementById("graphCanvas");
+    const graphMetaEl = document.getElementById("graphMeta");
+    const typeCountsEl = document.getElementById("typeCounts");
+    const legendEl = document.getElementById("legend");
+    const sidebarSummaryEl = document.getElementById("sidebarSummary");
 
-    function escapeHtml(value) {
-      return String(value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll("\"", "&quot;")
-        .replaceAll("'", "&#039;");
-    }
+    const nodePalette = {
+      edge_gateway: "#111827",
+      linux_server: "#166534",
+      database_server: "#92400e",
+      oss_gateway: "#1d4ed8",
+      secret_store: "#b91c1c",
+      file_server: "#7c3aed",
+      cloud_proxy: "#0f766e",
+      default: "#374151",
+    };
 
     function renderAlerts(alerts) {
       alertCountEl.textContent = `${alerts.length} alerts`;
+      openAlertsEl.textContent = String(alerts.length);
       if (!alerts.length) {
-        alertsListEl.innerHTML = '<div class="empty">暂无告警</div>';
+        alertsListEl.innerHTML = '<div class="empty-state">暂无告警</div>';
         return;
       }
       alertsListEl.innerHTML = alerts.map((alert) => `
-        <article class="item">
-          <div class="item-top">
+        <article class="list-item">
+          <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;">
             <strong>${escapeHtml(alert.alert_type || "unknown_alert")}</strong>
-            <span class="severity">${escapeHtml(alert.severity || "unknown")}</span>
+            <span class="pill ${severityClass(alert.severity)}">${escapeHtml(alert.severity || "unknown")}</span>
           </div>
-          <div class="meta">来源: ${escapeHtml(alert.source || "unknown")}<br>时间: ${escapeHtml(alert.created_at || "n/a")}</div>
-          <div class="payload">${escapeHtml(JSON.stringify(alert.details || {}, null, 2))}</div>
+          <div class="inline-meta">来源: ${escapeHtml(alert.source || "unknown")}<br>时间: ${escapeHtml(alert.created_at || "n/a")}</div>
+          <div class="mono-block">${escapeHtml(JSON.stringify(alert.details || {}, null, 2))}</div>
         </article>
       `).join("");
     }
 
-    function renderPayloads(payloads) {
-      payloadCountEl.textContent = `${payloads.length} payloads`;
-      if (!payloads.length) {
-        payloadsListEl.innerHTML = '<div class="empty">暂无载荷</div>';
+    function renderSessions(sessions) {
+      sessionCountEl.textContent = `${sessions.length} sessions`;
+      if (!sessions.length) {
+        sessionRowsEl.innerHTML = '<div class="empty-state">暂无 SSH 会话</div>';
         return;
       }
-      payloadsListEl.innerHTML = payloads.map((payload) => `
-        <article class="item">
-          <div class="item-top">
-            <strong>${escapeHtml(payload.hostname || payload.asset_id || "unknown_asset")}</strong>
-            <span class="meta">${escapeHtml(payload.protocol || "unknown")}</span>
-          </div>
-          <div class="meta">来源: ${escapeHtml(payload.source_ip || "unknown")}<br>时间: ${escapeHtml(payload.created_at || "n/a")}</div>
-          <div class="payload">${escapeHtml(payload.payload || "")}</div>
-        </article>
+      sessionRowsEl.innerHTML = sessions.map((session) => `
+        <div class="table-row">
+          <div><strong>${escapeHtml(session.session_id)}</strong><div class="inline-meta">${escapeHtml(session.entry_hostname || "unknown")}</div></div>
+          <div>${escapeHtml(session.source_ip || "unknown")}</div>
+          <div>${escapeHtml(session.command_count || 0)}</div>
+          <div><a class="link-button" href="/session/view?session_id=${encodeURIComponent(session.session_id)}">查看回放</a></div>
+        </div>
       `).join("");
+    }
+
+    function renderTypeCounts(typeCounts) {
+      const entries = Object.entries(typeCounts || {});
+      if (!entries.length) {
+        typeCountsEl.innerHTML = '<div class="empty-state">暂无资产分布</div>';
+        return;
+      }
+      typeCountsEl.innerHTML = entries.map(([type, count]) => `
+        <div class="list-item">
+          <div style="display:flex;justify-content:space-between;gap:10px;">
+            <strong>${escapeHtml(type)}</strong>
+            <span>${escapeHtml(count)}</span>
+          </div>
+        </div>
+      `).join("");
+      legendEl.innerHTML = entries.map(([type]) => `
+        <div class="legend-item">
+          <span class="legend-swatch" style="background:${nodePalette[type] || nodePalette.default}"></span>
+          <span>${escapeHtml(type)}</span>
+        </div>
+      `).join("");
+    }
+
+    function renderGraph(graph) {
+      const assets = graph.assets || [];
+      const edges = graph.edges || [];
+      graphMetaEl.textContent = `${assets.length} assets / ${edges.length} paths`;
+      if (!assets.length) {
+        graphCanvasEl.innerHTML = "";
+        return;
+      }
+
+      const columns = [
+        ["edge_gateway"],
+        ["linux_server", "database_server", "secret_store", "file_server"],
+        ["oss_gateway", "cloud_proxy"],
+      ];
+      const positionMap = new Map();
+      const width = 980;
+      const height = 520;
+      const columnX = [130, 470, 820];
+      const grouped = [[], [], []];
+
+      assets.forEach((asset) => {
+        const type = asset.asset_type || "default";
+        let groupIndex = 1;
+        if (columns[0].includes(type)) groupIndex = 0;
+        else if (columns[2].includes(type)) groupIndex = 2;
+        grouped[groupIndex].push(asset);
+      });
+
+      grouped.forEach((group, groupIndex) => {
+        const gap = height / (group.length + 1);
+        group.forEach((asset, index) => {
+          positionMap.set(asset.asset_id, {
+            x: columnX[groupIndex],
+            y: Math.round(gap * (index + 1)),
+            asset,
+          });
+        });
+      });
+
+      const edgeLines = edges.map((edge) => {
+        const from = positionMap.get(edge.from_asset_id);
+        const to = positionMap.get(edge.to_asset_id);
+        if (!from || !to) return "";
+        return `<line x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}" stroke="#9ca3af" stroke-width="1.5" />`;
+      }).join("");
+
+      const edgeLabels = edges.map((edge) => {
+        const from = positionMap.get(edge.from_asset_id);
+        const to = positionMap.get(edge.to_asset_id);
+        if (!from || !to) return "";
+        const midX = (from.x + to.x) / 2;
+        const midY = (from.y + to.y) / 2;
+        return `<text x="${midX}" y="${midY - 8}" text-anchor="middle" font-size="10" fill="#6b7280">${escapeHtml(edge.vector || "path")}</text>`;
+      }).join("");
+
+      const nodes = Array.from(positionMap.values()).map(({ x, y, asset }) => {
+        const fill = nodePalette[asset.asset_type] || nodePalette.default;
+        return `
+          <g>
+            <rect x="${x - 70}" y="${y - 24}" width="140" height="48" rx="6" fill="#ffffff" stroke="${fill}" stroke-width="2"></rect>
+            <text x="${x}" y="${y - 2}" text-anchor="middle" font-size="12" fill="#111827">${escapeHtml(asset.hostname || asset.asset_id)}</text>
+            <text x="${x}" y="${y + 14}" text-anchor="middle" font-size="10" fill="#6b7280">${escapeHtml(asset.asset_type || "unknown")}</text>
+          </g>
+        `;
+      }).join("");
+
+      graphCanvasEl.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      graphCanvasEl.innerHTML = `
+        <rect x="0" y="0" width="${width}" height="${height}" fill="#fcfcfc"></rect>
+        <text x="130" y="30" text-anchor="middle" font-size="11" fill="#6b7280">Ingress</text>
+        <text x="470" y="30" text-anchor="middle" font-size="11" fill="#6b7280">Internal Maze</text>
+        <text x="820" y="30" text-anchor="middle" font-size="11" fill="#6b7280">Extended Targets</text>
+        ${edgeLines}
+        ${edgeLabels}
+        ${nodes}
+      `;
     }
 
     async function refresh() {
       try {
-        const [statusResp, alertsResp, payloadsResp] = await Promise.all([
+        const [statusResp, alertsResp, sessionsResp, graphResp] = await Promise.all([
           fetch("/status"),
           fetch("/alerts"),
-          fetch("/payloads"),
+          fetch("/sessions"),
+          fetch("/graph/overview"),
         ]);
         const status = await statusResp.json();
         const alerts = await alertsResp.json();
-        const payloads = await payloadsResp.json();
+        const sessions = await sessionsResp.json();
+        const graph = await graphResp.json();
 
         activeConnectionsEl.textContent = String(status.active_connections ?? 0);
         honeypotAssetsEl.textContent = String(status.honeypot_assets ?? 0);
         renderAlerts(alerts.alerts || []);
-        renderPayloads(payloads.payloads || []);
+        renderSessions(sessions.sessions || []);
+        renderGraph(graph);
+        renderTypeCounts(graph.type_counts || {});
+        sidebarSummaryEl.textContent = `资产 ${status.honeypot_assets ?? 0} / 活跃连接 ${status.active_connections ?? 0} / 告警 ${alerts.alerts?.length ?? 0}`;
         lastUpdatedEl.textContent = `最近刷新 ${new Date().toLocaleString("zh-CN", { hour12: false })}`;
       } catch (error) {
         lastUpdatedEl.textContent = `刷新失败: ${error}`;

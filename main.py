@@ -121,6 +121,11 @@ async def payloads(request: Request) -> dict[str, Any]:
     return {"payloads": recent_payloads}
 
 
+@app.get("/graph/overview")
+async def graph_overview(request: Request) -> dict[str, Any]:
+    return await request.app.state.graph_db.graph_overview()
+
+
 @app.get("/sessions")
 async def sessions(request: Request) -> dict[str, Any]:
     ssh_sessions = await request.app.state.graph_db.recent_sessions(protocol="ssh", limit=50)

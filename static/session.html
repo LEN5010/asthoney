@@ -3,255 +3,225 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SSH Session Detail</title>
-  <style>
-    :root {
-      --bg: #08101c;
-      --panel: rgba(15, 25, 41, 0.94);
-      --panel-border: rgba(110, 137, 173, 0.18);
-      --text: #e6eef8;
-      --muted: #91a3bc;
-      --accent: #4fd1c5;
-      --inbound: rgba(79, 209, 197, 0.11);
-      --outbound: rgba(255, 143, 107, 0.12);
-      --danger: #ff657b;
-    }
-
-    * { box-sizing: border-box; }
-
-    body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: "SF Mono", "JetBrains Mono", "IBM Plex Mono", monospace;
-      color: var(--text);
-      background:
-        radial-gradient(circle at top left, rgba(79, 209, 197, 0.12), transparent 26%),
-        radial-gradient(circle at top right, rgba(255, 143, 107, 0.12), transparent 24%),
-        linear-gradient(160deg, #050912 0%, #091321 60%, #08101c 100%);
-    }
-
-    .wrap {
-      width: min(1380px, calc(100vw - 32px));
-      margin: 16px auto;
-      display: grid;
-      grid-template-columns: 1.25fr 0.75fr;
-      gap: 18px;
-    }
-
-    .panel {
-      background: rgba(7, 13, 23, 0.76);
-      border: 1px solid var(--panel-border);
-      border-radius: 22px;
-      padding: 22px;
-      backdrop-filter: blur(16px);
-    }
-
-    .header { margin-bottom: 16px; }
-    .title { margin: 10px 0 0; font-size: clamp(24px, 4vw, 34px); }
-    .muted { color: var(--muted); line-height: 1.7; font-size: 13px; }
-    .back { color: var(--accent); text-decoration: none; font-size: 13px; }
-
-    .stack { display: grid; gap: 14px; }
-
-    .line {
-      border-radius: 16px;
-      padding: 14px;
-      border: 1px solid rgba(255, 255, 255, 0.05);
-    }
-
-    .line.inbound { background: var(--inbound); }
-    .line.outbound { background: var(--outbound); }
-
-    .line-top {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      align-items: center;
-      margin-bottom: 10px;
-      font-size: 12px;
-      color: var(--muted);
-      flex-wrap: wrap;
-    }
-
-    .payload {
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-size: 13px;
-      line-height: 1.7;
-    }
-
-    .prompt {
-      margin-top: 10px;
-      color: var(--accent);
-      font-size: 12px;
-      white-space: pre-wrap;
-    }
-
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      padding: 4px 8px;
-      border-radius: 999px;
-      background: rgba(255, 101, 123, 0.12);
-      border: 1px solid rgba(255, 101, 123, 0.2);
-      color: #ffd5dc;
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-    }
-
-    .card {
-      background: var(--panel);
-      border: 1px solid var(--panel-border);
-      border-radius: 18px;
-      padding: 16px;
-    }
-
-    .card + .card { margin-top: 14px; }
-
-    .card h3 {
-      margin: 0 0 12px;
-      font-size: 14px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-
-    .list { display: grid; gap: 10px; }
-
-    .list-item {
-      border-radius: 14px;
-      padding: 12px;
-      background: rgba(255, 255, 255, 0.02);
-      border: 1px solid rgba(255, 255, 255, 0.05);
-      font-size: 13px;
-      line-height: 1.7;
-    }
-
-    .empty {
-      color: var(--muted);
-      text-align: center;
-      padding: 22px;
-      border-radius: 16px;
-      border: 1px dashed rgba(255, 255, 255, 0.08);
-    }
-
-    @media (max-width: 1100px) {
-      .wrap { grid-template-columns: 1fr; }
-    }
-  </style>
+  <title>SSH Replay</title>
+  <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-  <main class="wrap">
-    <section class="panel">
-      <div class="header">
-        <a class="back" href="/sessions/view">返回 SSH 会话列表</a>
-        <h1 class="title">单条 SSH 对话日志</h1>
-        <div class="muted" id="sessionMeta">等待加载会话...</div>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="topbar-left">
+        <button class="sidebar-toggle" data-sidebar-toggle>菜单</button>
+        <a class="brand" href="/">Generative Infinite Deception Maze</a>
       </div>
-      <div class="stack" id="transcript">
-        <div class="empty">暂无对话数据</div>
+      <div class="topbar-right">
+        <span class="topbar-meta" id="sessionMeta">等待加载会话</span>
       </div>
-    </section>
+    </header>
 
-    <aside>
-      <section class="card">
-        <h3>AI 提炼分析</h3>
-        <div class="list" id="analysisCard">
-          <div class="empty">等待 AI 分析</div>
+    <div class="workspace">
+      <aside class="sidebar">
+        <div class="sidebar-group">
+          <div class="sidebar-label">Navigation</div>
+          <nav class="nav-list">
+            <a class="nav-link" data-nav="overview" href="/"><span>总体态势</span><span class="nav-badge">Graph</span></a>
+            <a class="nav-link" data-nav="sessions" href="/sessions/view"><span>SSH 会话</span><span class="nav-badge">Logs</span></a>
+            <a class="nav-link" data-nav="docs" href="/docs"><span>API 文档</span><span class="nav-badge">OpenAPI</span></a>
+          </nav>
         </div>
-      </section>
-      <section class="card">
-        <h3>意图轨迹</h3>
-        <div class="list" id="intentList">
-          <div class="empty">暂无意图数据</div>
+        <div class="sidebar-group">
+          <div class="sidebar-label">回放</div>
+          <div class="inline-meta"></div>
         </div>
-      </section>
-    </aside>
-  </main>
+      </aside>
 
+      <main class="content">
+        <div class="content-header">
+          <div>
+            <h1 class="content-title">单会话终端回放</h1>
+            <div class="content-subtitle"></div>
+          </div>
+        </div>
+
+        <section class="panel-grid">
+          <article class="card span-8">
+            <div class="card-header">
+              <h2 class="card-title">Terminal Replay</h2>
+              <span class="card-meta" id="replayMeta">0 events</span>
+            </div>
+            <div class="card-body">
+              <div class="terminal-wrap">
+                <div class="terminal-topbar">
+                  <div class="terminal-controls">
+                    <button class="terminal-button" id="playBtn">播放</button>
+                    <button class="terminal-button" id="pauseBtn">暂停</button>
+                    <button class="terminal-button" id="stepBtn">单步</button>
+                    <button class="terminal-button" id="resetBtn">重置</button>
+                  </div>
+                  <div class="terminal-controls">
+                    <button class="terminal-button" data-speed="1200">慢速</button>
+                    <button class="terminal-button" data-speed="700">标准</button>
+                    <button class="terminal-button" data-speed="350">快速</button>
+                  </div>
+                </div>
+                <div class="terminal-screen" id="terminalScreen">
+                  <div class="empty-state">等待终端回放数据</div>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <aside class="span-4">
+            <div class="card">
+              <div class="card-header">
+                <h2 class="card-title">AI 分析</h2>
+                <span class="card-meta" id="analysisSource">pending</span>
+              </div>
+              <div class="card-body">
+                <div class="analysis-grid" id="analysisCard">
+                  <div class="empty-state">等待 AI 分析</div>
+                </div>
+              </div>
+            </div>
+            <div class="card" style="margin-top:16px;">
+              <div class="card-header">
+                <h2 class="card-title">Intent Timeline</h2>
+                <span class="card-meta" id="intentMeta">0 intents</span>
+              </div>
+              <div class="card-body">
+                <div class="stack" id="intentList">
+                  <div class="empty-state">暂无意图数据</div>
+                </div>
+              </div>
+            </div>
+          </aside>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
   <script>
+    initLayout("sessions");
+
     const params = new URLSearchParams(window.location.search);
     const sessionId = params.get("session_id");
     const sessionMetaEl = document.getElementById("sessionMeta");
-    const transcriptEl = document.getElementById("transcript");
+    const terminalScreenEl = document.getElementById("terminalScreen");
+    const replayMetaEl = document.getElementById("replayMeta");
     const analysisCardEl = document.getElementById("analysisCard");
+    const analysisSourceEl = document.getElementById("analysisSource");
     const intentListEl = document.getElementById("intentList");
+    const intentMetaEl = document.getElementById("intentMeta");
+    const playBtn = document.getElementById("playBtn");
+    const pauseBtn = document.getElementById("pauseBtn");
+    const stepBtn = document.getElementById("stepBtn");
+    const resetBtn = document.getElementById("resetBtn");
+    const speedButtons = document.querySelectorAll("[data-speed]");
 
-    function escapeHtml(value) {
-      return String(value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll("\"", "&quot;")
-        .replaceAll("'", "&#039;");
+    let transcript = [];
+    let replayIndex = 0;
+    let replayTimer = null;
+    let replaySpeed = 700;
+
+    function buildTerminalLine(item) {
+      if (item.direction === "attacker_to_maze") {
+        return `
+          <div class="terminal-line meta">${escapeHtml(item.created_at || "n/a")} | ${escapeHtml(item.hostname || "unknown")}</div>
+          <div class="terminal-line prompt">${escapeHtml(item.prompt || "$ ")}${escapeHtml(item.payload || "")}</div>
+        `;
+      }
+      const promptLine = item.prompt ? `<div class="terminal-line prompt">${escapeHtml(item.prompt)}</div>` : "";
+      const outputLine = item.payload ? `<div class="terminal-line output">${escapeHtml(item.payload)}</div>` : "";
+      return `
+        <div class="terminal-line meta">${escapeHtml(item.created_at || "n/a")} | ${escapeHtml(item.hostname || "unknown")}</div>
+        ${outputLine}
+        ${promptLine}
+      `;
     }
 
-    function renderTranscript(items) {
-      if (!items.length) {
-        transcriptEl.innerHTML = '<div class="empty">暂无对话数据</div>';
+    function renderReplayFrame() {
+      if (!transcript.length) {
+        terminalScreenEl.innerHTML = '<div class="empty-state">暂无对话数据</div>';
         return;
       }
-      transcriptEl.innerHTML = items.map((item) => `
-        <article class="line ${item.direction === "attacker_to_maze" ? "inbound" : "outbound"}">
-          <div class="line-top">
-            <span>${escapeHtml(item.created_at || "n/a")}</span>
-            <span>${escapeHtml(item.hostname || item.asset_id || "unknown")}</span>
-            <span>${escapeHtml(item.direction || "unknown")}</span>
-          </div>
-          <div class="payload">${escapeHtml(item.payload || "") || "(无文本输出，仅 prompt 变化)"}</div>
-          ${item.prompt ? `<div class="prompt">${escapeHtml(item.prompt)}</div>` : ""}
-        </article>
-      `).join("");
+      terminalScreenEl.innerHTML = transcript.slice(0, replayIndex).map(buildTerminalLine).join("");
+      terminalScreenEl.scrollTop = terminalScreenEl.scrollHeight;
+    }
+
+    function stopReplay() {
+      if (replayTimer) {
+        clearInterval(replayTimer);
+        replayTimer = null;
+      }
+    }
+
+    function stepReplay() {
+      if (replayIndex >= transcript.length) {
+        stopReplay();
+        return;
+      }
+      replayIndex += 1;
+      renderReplayFrame();
+      replayMetaEl.textContent = `${replayIndex}/${transcript.length} events`;
+    }
+
+    function startReplay() {
+      stopReplay();
+      replayTimer = setInterval(() => {
+        if (replayIndex >= transcript.length) {
+          stopReplay();
+          return;
+        }
+        stepReplay();
+      }, replaySpeed);
+    }
+
+    function resetReplay() {
+      stopReplay();
+      replayIndex = 0;
+      replayMetaEl.textContent = `0/${transcript.length} events`;
+      renderReplayFrame();
+    }
+
+    playBtn.addEventListener("click", startReplay);
+    pauseBtn.addEventListener("click", stopReplay);
+    stepBtn.addEventListener("click", stepReplay);
+    resetBtn.addEventListener("click", resetReplay);
+    speedButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        replaySpeed = Number(button.getAttribute("data-speed")) || 700;
+        if (replayTimer) startReplay();
+      });
+    });
+
+    function renderAnalysis(analysis) {
+      analysisSourceEl.textContent = escapeHtml(analysis.analysis_source || "unknown");
+      analysisCardEl.innerHTML = `
+        <div class="list-item"><strong>结论摘要</strong><div class="inline-meta">${escapeHtml(analysis.summary || "暂无结论")}</div></div>
+        <div class="list-item"><strong>攻击目的</strong><div class="inline-meta">${escapeHtml(analysis.objective || "未知")}</div></div>
+        <div class="list-item"><strong>风险等级</strong><div style="margin-top:8px;"><span class="pill ${severityClass(analysis.risk_level)}">${escapeHtml(analysis.risk_level || "unknown")}</span></div></div>
+        <div class="list-item"><strong>非真人 Agent 判断</strong><div class="inline-meta">${analysis.likely_non_human_test_agent ? "是" : "否"}<br>${escapeHtml((analysis.likely_non_human_reasons || []).join(" | ") || "无")}</div></div>
+        <div class="list-item"><strong>手段提炼</strong><div class="inline-meta">${escapeHtml((analysis.techniques || []).join(" | ") || "无")}</div></div>
+        <div class="list-item"><strong>处置建议</strong><div class="inline-meta">${escapeHtml((analysis.suggested_actions || []).join("\n") || "无")}</div></div>
+      `;
     }
 
     function renderIntents(intents) {
+      intentMetaEl.textContent = `${intents.length} intents`;
       if (!intents.length) {
-        intentListEl.innerHTML = '<div class="empty">暂无意图数据</div>';
+        intentListEl.innerHTML = '<div class="empty-state">暂无意图数据</div>';
         return;
       }
       intentListEl.innerHTML = intents.map((intent) => `
-        <article class="list-item">
-          <strong>${escapeHtml(intent.category || "unknown")}</strong><br>
-          时间: ${escapeHtml(intent.created_at || "n/a")}<br>
-          置信度: ${escapeHtml(intent.confidence || "n/a")}<br>
-          目标: ${escapeHtml(intent.hostname || intent.asset_id || "unknown")}<br>
-          摘要: ${escapeHtml(intent.summary || "")}
-        </article>
+        <div class="list-item">
+          <strong>${escapeHtml(intent.category || "unknown")}</strong>
+          <div class="inline-meta">
+            ${escapeHtml(intent.created_at || "n/a")}<br>
+            confidence=${escapeHtml(intent.confidence || "n/a")}<br>
+            ${escapeHtml(intent.summary || "")}
+          </div>
+        </div>
       `).join("");
-    }
-
-    function renderAnalysis(analysis) {
-      analysisCardEl.innerHTML = `
-        <article class="list-item">
-          <strong>结论</strong><br>
-          ${escapeHtml(analysis.summary || "暂无结论")}
-        </article>
-        <article class="list-item">
-          <strong>目标判断</strong><br>
-          ${escapeHtml(analysis.objective || "unknown")}
-        </article>
-        <article class="list-item">
-          <strong>风险等级</strong><br>
-          <span class="badge">${escapeHtml(analysis.risk_level || "unknown")}</span>
-        </article>
-        <article class="list-item">
-          <strong>是否疑似非真人测试 Agent</strong><br>
-          ${analysis.likely_non_human_test_agent ? "是" : "否"}<br>
-          ${escapeHtml((analysis.likely_non_human_reasons || []).join(" | ") || "无")}
-        </article>
-        <article class="list-item">
-          <strong>战术手段</strong><br>
-          ${escapeHtml((analysis.techniques || []).join(" | ") || "无")}
-        </article>
-        <article class="list-item">
-          <strong>证据摘要</strong><br>
-          ${escapeHtml((analysis.evidence || []).join("\n") || "无")}
-        </article>
-        <article class="list-item">
-          <strong>建议动作</strong><br>
-          ${escapeHtml((analysis.suggested_actions || []).join("\n") || "无")}
-        </article>
-      `;
     }
 
     async function loadSession() {
@@ -267,17 +237,20 @@
         const detail = await detailResp.json();
         const analysis = await analysisResp.json();
         const session = detail.session || {};
-        sessionMetaEl.innerHTML = `
-          会话: ${escapeHtml(session.session_id || "unknown")}<br>
-          来源: ${escapeHtml(session.source_ip || "unknown")}<br>
-          协议: ${escapeHtml(session.protocol || "unknown")}<br>
-          入口资产: ${escapeHtml(session.entry_hostname || session.entry_asset_id || "unknown")}<br>
-          首次出现: ${escapeHtml(session.created_at || "n/a")}<br>
-          最近活动: ${escapeHtml(session.last_seen || "n/a")}
-        `;
-        renderTranscript(detail.transcript || []);
-        renderIntents(detail.intents || []);
+        transcript = (detail.transcript || []).map((item, index, items) => {
+          if (item.direction === "attacker_to_maze") {
+            const next = items[index + 1];
+            if (next && next.direction === "maze_to_attacker" && next.prompt) {
+              return { ...item, prompt: next.prompt };
+            }
+          }
+          return item;
+        });
+        sessionMetaEl.textContent = `${session.session_id || "unknown"} | ${session.source_ip || "unknown"} | ${session.entry_hostname || session.entry_asset_id || "unknown"}`;
+        replayMetaEl.textContent = `0/${transcript.length} events`;
+        renderReplayFrame();
         renderAnalysis(analysis);
+        renderIntents(detail.intents || []);
       } catch (error) {
         sessionMetaEl.textContent = `加载失败: ${error}`;
       }

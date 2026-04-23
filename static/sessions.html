@@ -3,157 +3,94 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SSH Session Log Viewer</title>
-  <style>
-    :root {
-      --bg: #07101b;
-      --panel: rgba(15, 24, 38, 0.94);
-      --panel-border: rgba(110, 137, 173, 0.18);
-      --text: #e6eef8;
-      --muted: #91a3bc;
-      --accent: #4fd1c5;
-      --accent-soft: rgba(79, 209, 197, 0.1);
-    }
-
-    * { box-sizing: border-box; }
-
-    body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: "SF Mono", "JetBrains Mono", "IBM Plex Mono", monospace;
-      color: var(--text);
-      background:
-        radial-gradient(circle at top left, rgba(79, 209, 197, 0.12), transparent 24%),
-        linear-gradient(160deg, #050a14 0%, #0b1524 60%, #08111c 100%);
-    }
-
-    .wrap {
-      width: min(1180px, calc(100vw - 40px));
-      margin: 24px auto;
-      padding: 28px;
-      background: rgba(5, 10, 18, 0.7);
-      border: 1px solid var(--panel-border);
-      border-radius: 24px;
-      backdrop-filter: blur(16px);
-    }
-
-    .topbar {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-end;
-      gap: 16px;
-      margin-bottom: 24px;
-    }
-
-    .title { margin: 0; font-size: clamp(24px, 4vw, 38px); }
-    .subtitle { color: var(--muted); line-height: 1.6; margin-top: 10px; }
-    .back { color: var(--accent); text-decoration: none; font-size: 13px; }
-
-    .list { display: grid; gap: 14px; }
-
-    .card {
-      background: var(--panel);
-      border: 1px solid var(--panel-border);
-      border-radius: 18px;
-      padding: 16px;
-    }
-
-    .row {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
-
-    .meta {
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.7;
-      margin-top: 12px;
-    }
-
-    .payload {
-      margin-top: 12px;
-      color: var(--accent);
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-size: 13px;
-      line-height: 1.6;
-      padding: 12px;
-      border-radius: 14px;
-      background: var(--accent-soft);
-    }
-
-    .link {
-      color: var(--text);
-      text-decoration: none;
-      padding: 9px 12px;
-      border-radius: 999px;
-      border: 1px solid rgba(79, 209, 197, 0.28);
-      background: rgba(79, 209, 197, 0.08);
-      font-size: 12px;
-    }
-
-    .empty {
-      text-align: center;
-      color: var(--muted);
-      border: 1px dashed rgba(255, 255, 255, 0.08);
-      border-radius: 16px;
-      padding: 28px;
-    }
-  </style>
+  <title>SSH Sessions</title>
+  <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-  <main class="wrap">
-    <div class="topbar">
-      <div>
-        <a class="back" href="/">返回态势面板</a>
-        <h1 class="title">SSH 会话日志列表</h1>
-        <p class="subtitle">按会话查看攻击者与蜜网终端的完整交互，并跳转到单条 SSH 对话详情与 AI 分析。</p>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="topbar-left">
+        <button class="sidebar-toggle" data-sidebar-toggle>菜单</button>
+        <a class="brand" href="/">Generative Infinite Deception Maze</a>
       </div>
-      <div class="meta" id="lastUpdated">等待刷新</div>
+      <div class="topbar-right">
+        <span class="topbar-meta" id="lastUpdated">等待刷新</span>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <aside class="sidebar">
+        <div class="sidebar-group">
+          <div class="sidebar-label">Navigation</div>
+          <nav class="nav-list">
+            <a class="nav-link" data-nav="overview" href="/"><span>总体态势</span><span class="nav-badge">Graph</span></a>
+            <a class="nav-link" data-nav="sessions" href="/sessions/view"><span>SSH 会话</span><span class="nav-badge">Logs</span></a>
+            <a class="nav-link" data-nav="docs" href="/docs"><span>API 文档</span><span class="nav-badge">OpenAPI</span></a>
+          </nav>
+        </div>
+        <div class="sidebar-group">
+          <div class="sidebar-label">概览</div>
+          <div class="inline-meta"></div>
+        </div>
+      </aside>
+
+      <main class="content">
+        <div class="content-header">
+          <div>
+            <h1 class="content-title">SSH 会话视图</h1>
+            <div class="content-subtitle"></div>
+          </div>
+        </div>
+
+        <section class="panel-grid">
+          <article class="card span-12">
+            <div class="card-header">
+              <h2 class="card-title">Session Index</h2>
+              <span class="card-meta" id="sessionCount">0 sessions</span>
+            </div>
+            <div class="card-body">
+              <div class="table">
+                <div class="table-head">
+                  <div>Session</div>
+                  <div>Source</div>
+                  <div>Commands</div>
+                  <div>Replay</div>
+                </div>
+                <div id="sessionRows">
+                  <div class="empty-state">暂无 SSH 会话</div>
+                </div>
+              </div>
+            </div>
+          </article>
+        </section>
+      </main>
     </div>
+  </div>
 
-    <section class="list" id="sessionList">
-      <div class="empty">暂无 SSH 会话</div>
-    </section>
-  </main>
-
+  <script src="/static/app.js"></script>
   <script>
-    const sessionListEl = document.getElementById("sessionList");
+    initLayout("sessions");
+
+    const sessionRowsEl = document.getElementById("sessionRows");
+    const sessionCountEl = document.getElementById("sessionCount");
     const lastUpdatedEl = document.getElementById("lastUpdated");
 
-    function escapeHtml(value) {
-      return String(value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll("\"", "&quot;")
-        .replaceAll("'", "&#039;");
-    }
-
     function renderSessions(sessions) {
+      sessionCountEl.textContent = `${sessions.length} sessions`;
       if (!sessions.length) {
-        sessionListEl.innerHTML = '<div class="empty">暂无 SSH 会话</div>';
+        sessionRowsEl.innerHTML = '<div class="empty-state">暂无 SSH 会话</div>';
         return;
       }
-      sessionListEl.innerHTML = sessions.map((session) => `
-        <article class="card">
-          <div class="row">
+      sessionRowsEl.innerHTML = sessions.map((session) => `
+        <div class="table-row">
+          <div>
             <strong>${escapeHtml(session.session_id)}</strong>
-            <a class="link" href="/session/view?session_id=${encodeURIComponent(session.session_id)}">查看对话与分析</a>
+            <div class="inline-meta">${escapeHtml(session.entry_hostname || session.entry_asset_id || "unknown")}</div>
           </div>
-          <div class="meta">
-            来源: ${escapeHtml(session.source_ip || "unknown")}<br>
-            协议: ${escapeHtml(session.protocol || "unknown")}<br>
-            入口资产: ${escapeHtml(session.entry_hostname || session.entry_asset_id || "unknown")}<br>
-            首次出现: ${escapeHtml(session.created_at || "n/a")}<br>
-            最近活动: ${escapeHtml(session.last_seen || "n/a")}<br>
-            命令数: ${escapeHtml(session.command_count || 0)}
-          </div>
-          <div class="payload">${escapeHtml(session.last_payload || "(无最近载荷)")}</div>
-        </article>
+          <div>${escapeHtml(session.source_ip || "unknown")}</div>
+          <div>${escapeHtml(session.command_count || 0)}</div>
+          <div><a class="link-button" href="/session/view?session_id=${encodeURIComponent(session.session_id)}">终端回放</a></div>
+        </div>
       `).join("");
     }
 

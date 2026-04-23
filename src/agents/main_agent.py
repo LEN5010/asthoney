@@ -460,20 +460,22 @@ class MainAgent:
             {
                 "role": "system",
                 "content": (
-                    "You are a senior SOC analyst for an AI deception maze. "
-                    "Read the session transcript and return strict JSON only. "
-                    "Required keys: summary, objective, techniques, risk_level, confidence, "
-                    "likely_non_human_test_agent, likely_non_human_reasons, evidence, suggested_actions. "
-                    "techniques, likely_non_human_reasons, evidence, suggested_actions must be arrays of strings. "
-                    "likely_non_human_test_agent must be boolean. confidence must be a number between 0 and 1."
+                    "你是一名生成式欺骗迷宫系统的高级 SOC 分析师。"
+                    "请阅读会话摘要、意图轨迹和终端转录，仅返回严格 JSON，不要输出 Markdown，不要输出解释。"
+                    "必须包含以下键：summary, objective, techniques, risk_level, confidence, "
+                    "likely_non_human_test_agent, likely_non_human_reasons, evidence, suggested_actions。"
+                    "其中 summary、objective、risk_level 必须使用中文。"
+                    "techniques、likely_non_human_reasons、evidence、suggested_actions 必须是字符串数组，且数组内容全部使用中文。"
+                    "likely_non_human_test_agent 必须是布尔值。confidence 必须是 0 到 1 之间的数字。"
+                    "risk_level 仅允许 low、medium、high、critical 之一。"
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    f"Session summary: {json.dumps(detail.get('session', {}), ensure_ascii=True)}\n"
-                    f"Observed intents:\n" + "\n".join(intent_lines) + "\n\n"
-                    f"Transcript:\n" + "\n".join(transcript_lines)
+                    f"会话摘要：{json.dumps(detail.get('session', {}), ensure_ascii=False)}\n"
+                    f"观察到的意图：\n" + "\n".join(intent_lines) + "\n\n"
+                    f"终端转录：\n" + "\n".join(transcript_lines)
                 ),
             },
         ]
@@ -514,8 +516,8 @@ class MainAgent:
         return {
             "session_id": detail.get("session", {}).get("session_id"),
             "summary": (
-                f"Observed {len(commands)} attacker commands across {len(categories)} classified intents; "
-                f"dominant objective appears to be {objective}."
+                f"本次会话共观察到 {len(commands)} 条攻击者命令，关联 {len(categories)} 条意图记录；"
+                f"当前判断其主要目标为：{objective}。"
             ),
             "objective": objective,
             "techniques": techniques,
@@ -532,37 +534,37 @@ class MainAgent:
 
     def _map_categories_to_techniques(self, categories: list[str]) -> list[str]:
         mapping = {
-            "discovery": "Host Discovery / Environment Enumeration",
-            "credential_access": "Credential Access / Secrets Harvesting",
-            "lateral_movement": "Lateral Movement via SSH",
-            "tool_transfer": "Ingress Tool Transfer",
-            "cloud_recon": "Cloud Control-Plane Reconnaissance",
-            "collection": "Data Collection / Staging",
-            "interactive_shell": "Interactive Command Execution",
-            "generic_probe": "Initial Foothold Probing",
+            "discovery": "主机发现与环境枚举",
+            "credential_access": "凭证获取与密钥搜集",
+            "lateral_movement": "通过 SSH 进行横向移动",
+            "tool_transfer": "投递或拉取攻击工具",
+            "cloud_recon": "云控制面侦察",
+            "collection": "数据收集与暂存",
+            "interactive_shell": "交互式命令执行",
+            "generic_probe": "初始探测与试探",
         }
         seen: list[str] = []
         for category in categories:
             technique = mapping.get(category, category.replace("_", " ").title())
             if technique not in seen:
                 seen.append(technique)
-        return seen or ["Low-fidelity probing"]
+        return seen or ["低强度探测"]
 
     def _infer_objective(self, categories: list[str], commands: list[str]) -> str:
         priority = [
-            ("credential_access", "harvest credentials and secrets for follow-on access"),
-            ("lateral_movement", "pivot deeper into internal nodes through SSH lateral movement"),
-            ("tool_transfer", "stage tooling or fetch payloads for execution"),
-            ("cloud_recon", "enumerate cloud access paths and remote control surfaces"),
-            ("collection", "collect and stage data for later exfiltration"),
-            ("discovery", "map the host and validate the deception environment"),
+            ("credential_access", "搜集凭证与敏感配置，为后续访问铺路"),
+            ("lateral_movement", "借助 SSH 向更深层诱饵节点横向渗透"),
+            ("tool_transfer", "投递工具或拉取载荷，为后续执行做准备"),
+            ("cloud_recon", "枚举云侧访问路径与远程控制面"),
+            ("collection", "收集并暂存潜在敏感数据"),
+            ("discovery", "摸清主机环境并验证当前是否为欺骗空间"),
         ]
         for category, objective in priority:
             if category in categories:
                 return objective
         if any(command in {"root", "sudo", "su"} for command in commands):
-            return "test privilege escalation boundaries and shell realism"
-        return "perform generic interactive probing"
+            return "测试提权边界并验证终端仿真真实性"
+        return "执行常规交互式探测"
 
     def _is_likely_non_human_agent(self, commands: list[str], transcript: list[dict[str, Any]]) -> bool:
         if len(commands) >= 6 and self._has_testing_sequence(commands):
@@ -575,23 +577,23 @@ class MainAgent:
     def _non_human_reasons(self, commands: list[str], transcript: list[dict[str, Any]]) -> list[str]:
         reasons: list[str] = []
         if self._has_testing_sequence(commands):
-            reasons.append("Command sequence resembles an automated realism benchmark rather than an operator workflow.")
+            reasons.append("命令序列更像自动化真实性基准测试，而不是人工攻击者的自然操作流。")
         intervals = self._command_intervals(transcript)
         if intervals and sum(1 for item in intervals if item <= 1.5) >= max(3, len(intervals) // 2):
-            reasons.append("Multiple commands arrived at near-uniform sub-second or low-latency cadence.")
+            reasons.append("多条命令以接近固定的低时延节奏到达，具备脚本或智能体批量探测特征。")
         if any(command in {"clear", "root", "sudo", "su"} for command in commands):
-            reasons.append("Session includes sandbox-evaluation commands commonly used by non-human test agents.")
-        return reasons or ["No strong indicators of a non-human testing agent were observed."]
+            reasons.append("会话包含典型沙箱探针命令，常见于非真人测试 Agent 的环境校验流程。")
+        return reasons or ["当前未观察到足够强的非真人测试 Agent 特征。"]
 
     def _suggest_actions(self, categories: list[str], likely_non_human: bool) -> list[str]:
         actions = [
-            "Preserve the full transcript and correlated intents for threat hunting.",
-            "Tag the source identity as high-confidence malicious for downstream controls.",
+            "保留完整终端转录与意图轨迹，供后续威胁狩猎和规则复盘使用。",
+            "将该来源标记为高置信恶意对象，并联动下游访问控制策略。",
         ]
         if "lateral_movement" in categories or "credential_access" in categories:
-            actions.append("Seed deeper lure credentials only on synthetic hosts and increase observation depth.")
+            actions.append("仅在合成诱饵主机继续投放更深层凭证线索，并提升观察深度。")
         if likely_non_human:
-            actions.append("Route the source into extended cognitive-deception flows tailored for agentic scanners.")
+            actions.append("将该来源导入面向智能体扫描器的扩展认知欺骗路径。")
         return actions
 
     def _has_testing_sequence(self, commands: list[str]) -> bool:
