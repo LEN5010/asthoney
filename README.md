@@ -1,62 +1,52 @@
-# Generative Infinite Deception Maze
+# 基于多智能体的生成式欺骗蜜罐网与态势感知系统
 
-面向 2026 A-ST 赛项的多智能体生成式欺骗蜜网原型。该实现将轻量级网络流量接入、LangGraph 主智能体编排、Qwen 子智能体高交互终端仿真、Neo4j 全局状态图以及 MCP 逻辑诱饵组合为一个可本地运行的生产风格骨架。
+《应用软件开发》课程设计（网络安全产品方向）。系统将 TCP/SSH 仿真诱捕入口、LangGraph 主智能体编排、大模型子智能体高交互终端仿真、Neo4j 全局状态图、MCP 逻辑诱饵与 Web 态势面板组合为一个可单机运行的欺骗防御原型。
+
+## 功能概览
+
+- `TrafficEngine` 处理 TCP/SSH 仿真入口与异步会话生命周期，对输入做控制字符消毒与超时控制，仅在流量具备高交互语义时提升到智能体层。
+- `MainAgent` 基于 LangGraph 状态图完成意图分析、欺骗节点路由与子智能体调度，并执行抢占式告警与模拟隔离闭环。
+- `SubAgent` 通过 OpenAI 兼容大模型接口生成高交互 Linux 终端响应；模型不可用或触发护栏时自动降级为确定性伪终端，保证演示可重复。
+- `GraphDB` 将 Asset、Session、Identity、Event、Intent、Alert、Action 统一存入 Neo4j，支持按会话回放与即时合成下一跳诱饵资产（JIT 拓扑）。
+- `MCP Trap` 暴露对自主 Agent 具有语义诱惑性的危险工具，一经调用即产生高置信告警并触发模拟隔离。
+- `Web Dashboard` 提供态势总览、SSH 会话列表、单会话终端回放与 AI 自动研判页面。
+- 控制面敏感接口（`/simulate`、`/history/purge`、会话研判控制）由 `X-Admin-Token` 令牌鉴权保护（安全需求 SR-02）。
 
 ## 项目目录
 
 ```text
 .
-├── .env.example
-├── README.md
-├── main.py
+├── .env.example          # 配置模板（复制为 .env 后填写）
+├── docker-compose.yml    # 一键启动 Neo4j
+├── main.py               # FastAPI 控制面入口
+├── pytest.ini
 ├── requirements.txt
-├── static
-│   ├── index.html
-│   ├── session.html
-│   └── sessions.html
-└── src
-    ├── __init__.py
-    ├── agents
-    │   ├── __init__.py
-    │   ├── main_agent.py
-    │   └── sub_agent.py
-    ├── config.py
-    ├── database
-    │   ├── __init__.py
-    │   └── graph_db.py
-    ├── network
-    │   ├── __init__.py
-    │   └── traffic_engine.py
-    └── trap
-        ├── __init__.py
-        └── mcp_trap.py
+├── scripts
+│   ├── demo_smoke.sh     # 功能冒烟（演示数据注入）
+│   └── security_smoke.sh # 安全冒烟（对应报告表 8-2）
+├── src
+│   ├── agents            # 主/子智能体
+│   ├── config.py         # 配置与大模型客户端
+│   ├── database          # Neo4j 图存储
+│   ├── network           # 诱捕流量入口
+│   └── trap              # MCP 逻辑诱饵
+├── static                # Web 态势面板（原生 HTML/CSS/JS）
+└── tests                 # 单元测试
 ```
 
-## 架构摘要
+## 快速开始
 
-- `TrafficEngine` 负责处理基础 TCP/SSH 入口与异步会话生命周期，仅在流量被识别为高交互语义负载时才提升到智能体层。
-- `MainAgent` 维护全局状态图与多节点路由逻辑，使用 LangGraph 将意图分析、欺骗节点合成、子智能体切换解耦。
-- `SubAgent` 通过 DashScope `qwen-max` 生成高交互 Linux 终端响应，同时保留确定性降级逻辑，避免 API 抖动导致服务中断。
-- `GraphDB` 将资产、会话、意图、告警和抢占式隔离动作统一存储于 Neo4j，用于支撑动态横向移动诱捕。
-- `MCP Trap` 暴露不应被合法 Agent 调用的危险工具，一旦触发即产生高置信度告警并触发隔离动作。
-- `Web Dashboard` 提供态势总览、SSH 会话列表、单会话日志查看以及 AI 自动研判页面。
-- `AI Session Analysis` 基于 DashScope 对攻击者行为提炼战术手段、攻击目标，并评估是否疑似非真人测试 Agent；当模型不可用时自动退回启发式分析。
+1. 启动 Neo4j（二选一）：
 
-## 三个演示创新点
+```bash
+# 方式一：docker compose（推荐，密码取 .env 中的 NEO4J_PASSWORD）
+docker compose up -d neo4j
 
-- `创新点一: Agent-Oriented Trap`
-  - 通过 `/mcp/tools`、`/mcp/.well-known/mcp-tools.json` 和 `/mcp/profile` 暴露一组对 Agentic AI 具有高语义诱惑性的工具。
-  - 一旦调用 `bypass_security_guardrails`、`extract_bulk_pii_database`、`override_RBAC_policies`，系统立即生成高置信告警并触发隔离动作模拟。
-- `创新点二: JIT 无限拓扑合成`
-  - 主智能体根据攻击者意图和会话上下文，在 `graph_db.py` 的 `synthesize_next_hop` 中即时合成新的诱饵资产与可达边。
-  - 新节点会附带 `jit_synthesized`、`session_id`、`cognitive_stage` 等图谱元数据，便于在 Neo4j 和前端面板中展示动态扩展的迷宫拓扑。
-- `创新点三: 抢占式防御闭环`
-  - 主智能体对每条会话流式执行意图分级，对横向移动、凭证探测、工具投递等行为自动产生日志、告警和隔离动作。
-  - 对会话级分析结果，可通过 `/sessions/{session_id}/analysis/controls` 触发“非真人测试 Agent”分析后联动控制。
+# 方式二：已有本地 Neo4j 或历史容器
+docker start maze-neo4j
+```
 
-## 本地运行
-
-1. 创建 Python 3.11+ 虚拟环境并安装依赖。
+2. 准备 Python 3.11+ 环境并安装依赖：
 
 ```bash
 python3 -m venv .venv
@@ -65,87 +55,66 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-2. 启动 Neo4j。
+3. 编辑 `.env`：
 
-如果本机已安装 Neo4j Desktop 或 Neo4j Community，可直接使用默认 `bolt://127.0.0.1:7687`。使用 Docker 时可执行：
+- `NEO4J_PASSWORD`：与 Neo4j 一致。
+- `ADMIN_API_TOKEN`：控制面管理令牌（必填，否则敏感接口不可用）。
+- `DASHSCOPE_API_KEY` / `DASHSCOPE_BASE_URL` / `DASHSCOPE_MODEL`：可选。支持 DashScope 原生 SDK 或任意 OpenAI 兼容网关；不配置时终端仿真与研判自动降级为确定性/启发式模式，核心功能不受影响。
 
-```bash
-docker run -d \
-  --name maze-neo4j \
-  -p 7474:7474 \
-  -p 7687:7687 \
-  -e NEO4J_AUTH=neo4j/please_change_me \
-  neo4j:5.23
-```
-
-3. 配置 `.env` 中的 `DASHSCOPE_API_KEY` 与 `NEO4J_PASSWORD`。
-
-4. 启动服务。
+4. 启动服务：
 
 ```bash
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-## 一键验证
-
-启动后可以通过以下接口和端口验证系统行为：
+## 验证与演示
 
 ```bash
-curl http://127.0.0.1:8000/healthz
-curl http://127.0.0.1:8000/status
-curl http://127.0.0.1:8000/sessions
-curl http://127.0.0.1:8000/actions
-curl -X POST http://127.0.0.1:8000/simulate \
-  -H 'Content-Type: application/json' \
-  -d '{"payload":"ssh admin@10.0.5.2","protocol":"ssh","source_ip":"198.51.100.9","destination_port":2222}'
+# 功能冒烟 + 注入演示数据（demo-ssh-01 会话）
+ADMIN_API_TOKEN=<你的令牌> bash scripts/demo_smoke.sh
+
+# 安全冒烟（鉴权、超长输入、危险命令、MCP 陷阱、消毒、密钥检查）
+ADMIN_API_TOKEN=<你的令牌> bash scripts/security_smoke.sh
+
+# 单元测试
+python -m pytest
 ```
 
-可使用 `nc` 对诱捕端口进行交互：
+手工交互演示：
 
 ```bash
-nc 127.0.0.1 2222
-nc 127.0.0.1 2323
-```
-
-MCP 逻辑诱饵接口示例：
-
-```bash
-curl http://127.0.0.1:8000/mcp/tools
-curl http://127.0.0.1:8000/mcp/profile
+nc 127.0.0.1 2222        # SSH 仿真入口，逐条输入 whoami / ls / ssh admin@10.0.5.2 等
+curl http://127.0.0.1:8000/mcp/tools   # MCP 诱饵工具列表
 curl -X POST http://127.0.0.1:8000/mcp/tools/bypass_security_guardrails \
-  -H 'Content-Type: application/json' \
-  -H 'x-agent-id: rogue-agent-01' \
-  -d '{"arguments":{"target":"policy-engine","mode":"off"}}'
+  -H 'Content-Type: application/json' -H 'x-agent-id: rogue-agent-01' \
+  -d '{"arguments":{"target":"policy-engine"}}'   # 触发陷阱 -> 403 + critical 告警
 ```
 
-## WebView 页面
+## Web 页面
 
-- 总览态势面板: `http://127.0.0.1:8000/`
-- SSH 会话列表页: `http://127.0.0.1:8000/sessions/view`
-- 单条 SSH 对话详情页: `http://127.0.0.1:8000/session/view?session_id=<session_id>`
+- 态势总览：`http://127.0.0.1:8000/`
+- SSH 会话列表：`http://127.0.0.1:8000/sessions/view`
+- 单会话回放与 AI 研判：`http://127.0.0.1:8000/session/view?session_id=<session_id>`
+- OpenAPI 文档：`http://127.0.0.1:8000/docs`
 
-## 会话日志与 AI 分析接口
+## 主要接口
 
-```bash
-curl http://127.0.0.1:8000/sessions
-curl http://127.0.0.1:8000/sessions/<session_id>
-curl http://127.0.0.1:8000/sessions/<session_id>/analysis
-curl -X POST http://127.0.0.1:8000/sessions/<session_id>/analysis/controls
-```
+| 接口 | 方法 | 说明 | 鉴权 |
+| --- | --- | --- | --- |
+| `/healthz` `/status` | GET | 健康检查与运行状态 | 否 |
+| `/sessions` `/sessions/{id}` | GET | 会话列表与明细（转录、意图） | 否 |
+| `/sessions/{id}/analysis` | GET | AI/启发式攻击研判 | 否 |
+| `/sessions/{id}/analysis/controls` | POST | 研判联动控制（告警+隔离） | 是 |
+| `/alerts` `/actions` `/payloads` `/graph/overview` | GET | 告警、动作、载荷、资产图 | 否 |
+| `/simulate` | POST | 注入模拟攻击载荷（演示/测试用） | 是 |
+| `/history/purge` | POST | 清空历史（需 `confirm=true`） | 是 |
+| `/mcp/tools` `/mcp/profile` | GET | MCP 诱饵工具面 | 否（诱捕面） |
+| `/mcp/tools/{tool_name}` | POST | 调用工具；陷阱工具返回 403 并告警 | 否（诱捕面） |
 
-`/sessions/<session_id>/analysis` 会输出：
+鉴权方式：请求头携带 `X-Admin-Token: <ADMIN_API_TOKEN>`。
 
-- `summary`: 攻击过程摘要
-- `objective`: 当前判断的攻击者目的
-- `techniques`: 提炼出的战术手段
-- `likely_non_human_test_agent`: 是否疑似非真人测试 Agent
-- `likely_non_human_reasons`: 判定依据
-- `suggested_actions`: 后续防御建议
+## 安全边界说明
 
-## 运行说明
-
-- FastAPI 控制面默认监听 `8000`。
-- 异步蜜罐入口默认监听 `2222` 和 `2323`。
-- 如果未配置 `DASHSCOPE_API_KEY`，子智能体仍可运行，但会退化为确定性伪终端响应。
-- Neo4j 中会持续积累 `Asset`、`Session`、`Intent`、`Alert`、`Action` 与 `Event` 节点，其中 `Event` 同时记录攻击者输入和蜜罐响应，可用于逐条 SSH 对话回放。
-- `/payloads` 侧重展示最新攻击输入，`/sessions` 与 `/sessions/<session_id>` 则用于完整会话审计与前端日志回放。
+- 本系统为课程实验环境：诱捕面全部使用仿真资产与伪造数据，SSH 入口为协议横幅仿真而非完整 SSH 协议栈；隔离动作默认 `simulate` 模式，不触碰真实网络。
+- 危险命令（rm/mkfs/reboot 等）仅返回仿真拒绝输出，不在宿主机执行；模型输出经护栏检查后才回写给连接方。
+- 密钥仅从 `.env` 读取，`.env` 不入库。

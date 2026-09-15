@@ -3,4 +3,7 @@
 venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+.DS_Store
+docs/
 作品说明材料.md
