@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -64,6 +64,18 @@ async def lifespan(app: FastAPI):
         await main_agent.close()
         await graph_db.close()
         logger.info("Shutdown complete")
+
+
+async def require_admin_token(
+    request: Request,
+    x_admin_token: str | None = Header(default=None),
+) -> None:
+    """SR-02: 未认证请求不得调用 /simulate、/history/purge 及会话研判控制接口。"""
+    expected = request.app.state.settings.admin_api_token
+    if not expected:
+        raise HTTPException(status_code=503, detail="ADMIN_API_TOKEN is not configured")
+    if x_admin_token != expected:
+        raise HTTPException(status_code=401, detail="valid X-Admin-Token header is required")
 
 
 app = FastAPI(
@@ -162,12 +174,12 @@ async def session_analysis(request: Request, session_id: str) -> dict[str, Any]:
     return await request.app.state.main_agent.analyze_session(session_id)
 
 
-@app.post("/sessions/{session_id}/analysis/controls")
+@app.post("/sessions/{session_id}/analysis/controls", dependencies=[Depends(require_admin_token)])
 async def session_analysis_controls(request: Request, session_id: str) -> dict[str, Any]:
     return await request.app.state.main_agent.trigger_session_analysis_controls(session_id)
 
 
-@app.post("/history/purge")
+@app.post("/history/purge", dependencies=[Depends(require_admin_token)])
 async def purge_history(request: Request, body: PurgeHistoryRequest) -> dict[str, Any]:
     if not body.confirm:
         return {"ok": False, "message": "confirm=true is required"}
@@ -176,7 +188,7 @@ async def purge_history(request: Request, body: PurgeHistoryRequest) -> dict[str
     return {"ok": True, "purged": summary}
 
 
-@app.post("/simulate")
+@app.post("/simulate", dependencies=[Depends(require_admin_token)])
 async def simulate(request: Request, body: SimulateRequest) -> dict[str, Any]:
     session_id = body.session_id or f"simulate-{uuid4()}"
     result = await request.app.state.main_agent.handle_payload(

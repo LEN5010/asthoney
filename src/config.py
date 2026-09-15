@@ -6,9 +6,11 @@ import random
 from functools import lru_cache
 from http import HTTPStatus
 from typing import Any
+from urllib.parse import urlparse
 
 import dashscope
-from pydantic import Field, field_validator
+import httpx
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 try:
@@ -52,10 +54,9 @@ class AppSettings(BaseSettings):
     honeypot_write_prompt: str = "maze@corp-gateway:~$ "
     honeypot_ssh_banner: str = "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6"
     session_memory_window: int = 12
-    synthetic_subnet: str = "10.0.5.0/24"
-    default_persona: str = "compromised_linux_terminal"
 
     dashscope_api_key: str = ""
+    dashscope_base_url: str = ""
     dashscope_model: str = "qwen-max"
     dashscope_timeout_seconds: float = 45.0
     dashscope_max_retries: int = 4
@@ -69,12 +70,7 @@ class AppSettings(BaseSettings):
     neo4j_database: str = "neo4j"
     neo4j_encrypted: bool = False
 
-    oss_endpoint: str = ""
-    oss_access_key_id: str = ""
-    oss_access_key_secret: str = ""
-    oss_bucket_name: str = ""
-
-    mcp_trap_token: str = "maze-trap-token"
+    admin_api_token: str = ""
     preemptive_action_mode: str = "simulate"
     alert_severity_threshold: str = "high"
 
@@ -102,6 +98,17 @@ class AppSettings(BaseSettings):
     def honeypot_protocol_list(self) -> list[str]:
         return [item.strip().lower() for item in self.honeypot_protocols.split(",") if item.strip()]
 
+    @property
+    def openai_compatible_chat_url(self) -> str | None:
+        base = self.dashscope_base_url.strip().rstrip("/")
+        if not base:
+            return None
+        if base.endswith("/chat/completions"):
+            return base
+        if base.endswith("/v1"):
+            return f"{base}/chat/completions"
+        return f"{base}/v1/chat/completions"
+
 
 def configure_logging(level: str) -> None:
     logging.basicConfig(
@@ -119,7 +126,7 @@ class DashScopeClient:
     def __init__(self, settings: AppSettings) -> None:
         self.settings = settings
         self.logger = logging.getLogger(self.__class__.__name__)
-        if settings.dashscope_api_key:
+        if settings.dashscope_api_key and not settings.openai_compatible_chat_url:
             dashscope.api_key = settings.dashscope_api_key
 
     @property
@@ -146,6 +153,13 @@ class DashScopeClient:
         last_error: Exception | None = None
         for attempt in range(1, self.settings.dashscope_max_retries + 1):
             try:
+                if self.settings.openai_compatible_chat_url:
+                    return await self._invoke_openai_compatible(
+                        model=chosen_model,
+                        messages=messages,
+                        temperature=chosen_temperature,
+                        top_p=chosen_top_p,
+                    )
                 response = await self._invoke(
                     model=chosen_model,
                     messages=messages,
@@ -157,17 +171,17 @@ class DashScopeClient:
                 last_error = exc
                 delay = self._backoff(attempt)
                 self.logger.warning(
-                    "DashScope rate limited on attempt %s/%s; retrying in %.2fs",
+                    "LLM rate limited on attempt %s/%s; retrying in %.2fs",
                     attempt,
                     self.settings.dashscope_max_retries,
                     delay,
                 )
                 await asyncio.sleep(delay)
-            except (DashScopeAPIError, InvalidTask, TimeoutError) as exc:
+            except (DashScopeAPIError, InvalidTask, TimeoutError, httpx.TimeoutException) as exc:
                 last_error = exc
                 delay = self._backoff(attempt)
                 self.logger.warning(
-                    "DashScope transient failure on attempt %s/%s: %s; retrying in %.2fs",
+                    "LLM transient failure on attempt %s/%s: %s; retrying in %.2fs",
                     attempt,
                     self.settings.dashscope_max_retries,
                     exc,
@@ -176,12 +190,47 @@ class DashScopeClient:
                 await asyncio.sleep(delay)
             except Exception as exc:  # pragma: no cover - defensive path for SDK differences
                 last_error = exc
-                self.logger.exception("DashScope invocation failed with an unexpected error")
+                self.logger.exception("LLM invocation failed with an unexpected error")
                 break
 
         raise DashScopeInvocationError(
-            f"DashScope invocation failed after {self.settings.dashscope_max_retries} attempts"
+            f"LLM invocation failed after {self.settings.dashscope_max_retries} attempts"
         ) from last_error
+
+    async def _invoke_openai_compatible(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, str]],
+        temperature: float,
+        top_p: float,
+    ) -> str:
+        url = self.settings.openai_compatible_chat_url
+        if not url:
+            raise DashScopeInvocationError("OpenAI-compatible base URL is not configured")
+
+        headers = {
+            "Authorization": f"Bearer {self.settings.dashscope_api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "top_p": top_p,
+        }
+        timeout = httpx.Timeout(self.settings.dashscope_timeout_seconds)
+        host = urlparse(url).netloc
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(url, headers=headers, json=payload)
+        if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
+            raise RateLimitError(f"{host} returned 429")
+        if response.status_code >= 500:
+            raise DashScopeAPIError(f"{host} returned {response.status_code}")
+        if response.status_code >= 400:
+            detail = response.text[:300].replace("\n", " ")
+            raise DashScopeInvocationError(f"{host} returned {response.status_code}: {detail}")
+        return self._extract_text(response.json())
 
     async def _invoke(
         self,

@@ -112,15 +112,21 @@
     purgeHistoryBtn.addEventListener("click", async () => {
       const accepted = window.confirm("这会清空已有会话、告警、动作和动态诱饵资产，是否继续？");
       if (!accepted) return;
+      const savedToken = localStorage.getItem("adminToken") || "";
+      const inputToken = window.prompt("请输入控制面管理令牌（X-Admin-Token）", savedToken);
+      if (inputToken === null) return;
+      const adminToken = inputToken.trim();
+      localStorage.setItem("adminToken", adminToken);
       purgeHistoryBtn.disabled = true;
       purgeHistoryBtn.textContent = "清理中";
       try {
         const resp = await fetch("/history/purge", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
           body: JSON.stringify({ confirm: true }),
         });
         const payload = await resp.json();
+        if (!resp.ok) throw new Error(payload.detail || "鉴权失败");
         if (!payload.ok) throw new Error(payload.message || "清理失败");
         await refresh();
         lastUpdatedEl.textContent = `历史已清空 ${new Date().toLocaleString("zh-CN", { hour12: false })}`;
