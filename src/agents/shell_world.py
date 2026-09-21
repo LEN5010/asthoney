@@ -84,8 +84,11 @@ class ShellWorld:
             root = args[-1] if args else self.cwd
             if root.startswith("-"):
                 root = self.cwd
-            found = self.files_under(self.resolve(root))
-            return "\n".join(found) if found else f"find: '{root}': No such file or directory"
+            path = self.resolve(root)
+            found = self.files_under(path)
+            if path in self.directories or found:
+                return "\n".join(found)
+            return f"find: '{root}': No such file or directory"
         if name == "mkdir":
             if not args:
                 return "mkdir: missing operand"
@@ -159,18 +162,24 @@ class ShellWorld:
 
     def _cd(self, raw: str) -> str:
         path = self.resolve(raw)
-        if path not in self.directories:
-            return f"bash: cd: {raw}: No such file or directory"
-        self.cwd = path
-        return ""
+        if path in self.directories:
+            self.cwd = path
+            return ""
+        if self._is_listed(path) or path in self.files:
+            return f"bash: cd: {raw}: Not a directory"
+        return f"bash: cd: {raw}: No such file or directory"
 
     def _ls(self, raw: str) -> str:
         path = self.resolve(raw)
         if path in self.directories:
             return "  ".join(self.directories[path])
-        if path in self.files:
+        if path in self.files or self._is_listed(path):
             return path.rsplit("/", 1)[-1]
         return f"ls: cannot access '{raw}': No such file or directory"
+
+    def _is_listed(self, path: str) -> bool:
+        parent, name = _split(path)
+        return bool(name) and name in self.directories.get(parent, [])
 
     def _cat(self, path: str) -> str:
         if path in self.files:

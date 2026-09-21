@@ -513,6 +513,13 @@ class GraphDB:
             ORDER BY last_cmd.created_at DESC
             LIMIT 1
         }}
+        CALL {{
+            WITH s
+            OPTIONAL MATCH (s)-[visit:VISITED]->(current:Asset)
+            RETURN current.hostname AS current_hostname
+            ORDER BY visit.last_seen DESC
+            LIMIT 1
+        }}
         RETURN {{
             session_id: s.session_id,
             protocol: s.protocol,
@@ -521,6 +528,7 @@ class GraphDB:
             last_seen: s.last_seen,
             entry_asset_id: entry.asset_id,
             entry_hostname: entry.hostname,
+            current_hostname: current_hostname,
             visited_hosts: visited_hosts,
             command_count: command_count,
             last_command_at: last_command_at,

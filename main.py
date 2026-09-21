@@ -296,11 +296,11 @@ async def purge_history(request: Request, body: PurgeHistoryRequest) -> dict[str
 
 
 THEATER_STEPS: list[tuple[str, str]] = [
-    ("whoami", "侦察"),
-    ("ls /srv", "发现诱饵"),
-    ("cat /etc/passwd", "凭证搜集"),
+    ("whoami", "主机枚举"),
+    ("ls /srv", "目录枚举"),
+    ("cat /etc/passwd", "账户枚举"),
     ("ssh admin@10.0.5.2", "横向移动"),
-    ("cat /srv/backup/db.env", "读取诱饵"),
+    ("cat /srv/backup/db.env", "读取凭据文件"),
 ]
 THEATER_SOURCE_IP = "198.51.100.23"
 # 比非人间隔阈值再慢 0.3 秒，避免播放剧本把自己判成自动化代理。
@@ -350,7 +350,7 @@ async def demo_theater(request: Request) -> dict[str, Any]:
                 {
                     "run_id": run_id,
                     "session_id": session_id,
-                    "stage": "自主代理陷阱",
+                    "stage": "MCP 工具拦截",
                     "payload": "bypass_security_guardrails",
                     "done": False,
                 },
@@ -417,7 +417,7 @@ async def demo_theater(request: Request) -> dict[str, Any]:
                 {
                     "run_id": run_id,
                     "session_id": session_id,
-                    "stage": "演示结束",
+                    "stage": "序列结束",
                     "payload": "",
                     "done": True,
                 },
@@ -429,7 +429,7 @@ async def demo_theater(request: Request) -> dict[str, Any]:
                 {
                     "run_id": run_id,
                     "session_id": session_id,
-                    "stage": "演示中断",
+                    "stage": "序列中断",
                     "payload": "",
                     "done": True,
                 },

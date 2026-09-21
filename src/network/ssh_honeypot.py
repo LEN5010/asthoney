@@ -91,6 +91,16 @@ class HoneypotSSHServer(asyncssh.SSHServer):
             return False
 
 
+def write_channel(process: asyncssh.SSHServerProcess, text: str) -> None:
+    """PTY 会话用 CR LF，否则只换行会在终端里变成阶梯。"""
+    if not text:
+        return
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    if getattr(process, "term_type", None):
+        normalized = normalized.replace("\n", "\r\n")
+    process.stdout.write(normalized)
+
+
 def sanitize_shell_input(raw: str) -> str:
     without_ansi = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", raw)
     without_controls = "".join(char for char in without_ansi if char in {"\t", "\n", "\r"} or ord(char) >= 32)
@@ -136,25 +146,25 @@ async def serve_ssh_process(
             if payload:
                 response, _, _ = await run_line(payload)
                 if response:
-                    process.stdout.write(response if response.endswith("\n") else response + "\n")
+                    write_channel(process, response if response.endswith("\n") else response + "\n")
             process.exit(0)
             return
 
-        process.stdout.write(f"Last login: Tue Apr 21 23:14:02 2026 from 10.0.4.8\r\n{prompt}")
+        write_channel(process, f"Last login: Tue Apr 21 23:14:02 2026 from 10.0.4.8\n{prompt}")
         while not process.stdin.at_eof():
             line = await process.stdin.readline()
             if not line:
                 break
             payload = sanitize_shell_input(line)
             if not payload:
-                process.stdout.write(prompt)
+                write_channel(process, prompt)
                 continue
             response, prompt, close = await run_line(payload)
             if response:
-                process.stdout.write(response if response.endswith("\n") else response + "\n")
+                write_channel(process, response if response.endswith("\n") else response + "\n")
             if close:
                 break
-            process.stdout.write(prompt)
+            write_channel(process, prompt)
     except asyncssh.BreakReceived:
         pass
     except Exception:

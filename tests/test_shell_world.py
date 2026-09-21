@@ -53,6 +53,23 @@ def test_touch_is_visible_and_rm_does_not_delete_it():
     assert "/tmp/note" in agent.world.snapshot()["created"]
 
 
+def test_listed_file_can_be_named_but_not_entered():
+    agent = _agent()
+    listed = asyncio.run(agent.handle_input("ls /etc/passwd"))
+    assert listed["response"] == "passwd"
+    rejected = asyncio.run(agent.handle_input("cd /etc/passwd"))
+    assert "Not a directory" in rejected["response"]
+    assert agent.world.cwd != "/etc/passwd"
+
+
+def test_find_on_empty_directory_is_not_missing():
+    agent = _agent()
+    created = asyncio.run(agent.handle_input("mkdir /tmp/emptybin"))
+    assert created["response"] == ""
+    found = asyncio.run(agent.handle_input("find /tmp/emptybin"))
+    assert "No such file" not in found["response"]
+
+
 def test_database_secret_stays_off_the_pivot():
     pivot = asyncio.run(_agent().handle_input("cat /srv/backup/db.env"))
     assert "DB_HOST=10.0.5.2" in pivot["response"]

@@ -47,13 +47,13 @@
         <div class="content-header">
           <div>
             <h1 class="content-title">总体态势感知</h1>
-            <div class="content-subtitle">诱捕入口、动态迷宫拓扑与抢占式防御闭环的实时视图，数据来自 Neo4j 全局状态图。</div>
+            <div class="content-subtitle">诱捕入口、资产拓扑和自动处置的实时视图，数据来自 Neo4j 全局状态图。</div>
           </div>
           <div class="header-actions">
             <a class="link-button" href="/attack/view">攻击矩阵</a>
             <a class="link-button" href="/profiles/view">攻击者画像</a>
             <a class="link-button" href="/sessions/view">SSH 会话列表</a>
-            <button class="link-button" id="theaterBtn" type="button">运行演练</button>
+            <button class="link-button" id="theaterBtn" type="button">注入演示序列</button>
             <button class="button" id="refreshBtn" type="button">手动刷新</button>
           </div>
         </div>
@@ -82,7 +82,7 @@
           <div class="kpi">
             <div class="kpi-label"><span class="dot" style="background: var(--cat-7);"></span>隔离来源</div>
             <p class="kpi-value" id="kpiQuarantine">0</p>
-            <div class="kpi-sub">抢占式闭环已隔离的攻击源</div>
+            <div class="kpi-sub">已执行模拟隔离的来源</div>
           </div>
         </section>
 
@@ -101,30 +101,30 @@
 
           <article class="card span-12">
             <div class="card-header">
-              <h2 class="card-title">正在交战</h2>
+              <h2 class="card-title">活动会话</h2>
               <span class="card-meta" id="engagementMeta">0 条会话</span>
             </div>
             <div class="card-body">
               <div class="stack" id="engagementList">
-                <div class="empty-state">还没有 SSH 会话。Agent 用 var/ssh/lure_ed25519 连 2222 之后，这里会显示当前主机和最后一条命令。</div>
+                <div class="empty-state">还没有 SSH 会话。客户端使用 var/ssh/lure_ed25519 连接 2222 后，这里显示当前资产和最后一条命令。</div>
               </div>
             </div>
           </article>
 
           <article class="card span-12">
             <div class="card-header">
-              <h2 class="card-title">智能体决策剧场</h2>
-              <span class="card-meta" id="theaterStage">等待攻击输入</span>
+              <h2 class="card-title">决策流水线</h2>
+              <span class="card-meta" id="theaterStage">等待输入</span>
             </div>
             <div class="card-body">
               <div class="theater-roles" id="theaterRoles"></div>
-              <div class="theater-rationale" id="theaterRationale">点播放杀伤链，或连上 2222 端口。四个角色会按分析、规划、仿真、护栏依次亮起。</div>
+              <div class="theater-rationale" id="theaterRationale">注入演示序列，或用 SSH 连接 2222。每条命令经过分析、规划、仿真、护栏。</div>
             </div>
           </article>
 
           <article class="card span-8">
             <div class="card-header">
-              <h2 class="card-title">动态迷宫拓扑</h2>
+              <h2 class="card-title">资产拓扑</h2>
               <span class="card-meta" id="graphMeta">0 资产 / 0 路径</span>
             </div>
             <div class="card-body">
@@ -132,7 +132,7 @@
               <div class="graph-frame">
                 <svg class="graph-canvas" id="graphCanvas" viewBox="0 0 1000 480" preserveAspectRatio="xMidYMid meet"></svg>
               </div>
-              <div class="footnote">节点按纵深分层：入口网关 → 预置迷宫 → JIT 合成 → 扩展目标。当前资产会脉冲，刚走过的边会流动。虚线节点是即时合成结果，悬停可看画像与诱饵。</div>
+              <div class="footnote">节点按纵深分层：入口网关 → 预置资产 → JIT 合成 → 扩展目标。当前资产会高亮，刚经过的边会流动。虚线节点是即时合成结果，悬停可看类型和线索。</div>
             </div>
           </article>
 
@@ -150,7 +150,7 @@
             </article>
             <article class="card">
               <div class="card-header">
-                <h2 class="card-title">抢占式动作</h2>
+                <h2 class="card-title">处置动作</h2>
                 <span class="card-meta" id="actionCount">0 条</span>
               </div>
               <div class="card-body">
@@ -400,12 +400,11 @@
       const items = (sessions || []).slice(0, 6);
       els.engagementMeta.textContent = `${items.length} 条会话`;
       if (!items.length) {
-        els.engagementList.innerHTML = '<div class="empty-state">还没有 SSH 会话。Agent 用 var/ssh/lure_ed25519 连 2222 之后，这里会显示当前主机和最后一条命令。</div>';
+        els.engagementList.innerHTML = '<div class="empty-state">还没有 SSH 会话。客户端使用 var/ssh/lure_ed25519 连接 2222 后，这里显示当前资产和最后一条命令。</div>';
         return;
       }
       els.engagementList.innerHTML = items.map((session) => {
-        const hosts = (session.visited_hosts || []).filter(Boolean);
-        const here = hosts.length ? hosts[hosts.length - 1] : (session.entry_hostname || "边缘主机");
+        const here = session.current_hostname || session.entry_hostname || "入口资产";
         return `
           <article class="list-item">
             <div class="list-item-head">
@@ -413,7 +412,7 @@
               <a class="link-button" href="/session/view?session_id=${encodeURIComponent(session.session_id || "")}">打开</a>
             </div>
             <div class="inline-meta" style="margin-top:4px;">
-              ${escapeHtml(session.source_ip || "unknown")} · 当前主机 <b>${escapeHtml(here)}</b>
+              ${escapeHtml(session.source_ip || "unknown")} · 当前资产 <b>${escapeHtml(here)}</b>
               · 最后命令 <span class="mono">${escapeHtml(truncate(session.last_payload || "—", 48))}</span>
             </div>
           </article>
@@ -497,7 +496,7 @@
         return;
       }
 
-      const columnTitles = ["入口网关", "预置迷宫", "JIT 合成", "扩展目标"];
+      const columnTitles = ["入口网关", "预置资产", "JIT 合成", "扩展目标"];
       const columnX = [120, 372, 624, 876];
       const grouped = [[], [], [], []];
       assets.forEach((asset) => {
@@ -639,13 +638,13 @@
     document.getElementById("refreshBtn").addEventListener("click", refresh);
     els.theaterBtn.addEventListener("click", async () => {
       els.theaterBtn.disabled = true;
-      els.theaterStage.textContent = "正在编排杀伤链…";
+      els.theaterStage.textContent = "正在注入演示序列…";
       try {
         const result = await adminFetch("/demo/theater", { method: "POST" });
-        els.theaterStage.textContent = `播放中 · ${result.session_id}`;
+        els.theaterStage.textContent = `注入中 · ${result.session_id}`;
       } catch (error) {
         els.theaterBtn.disabled = false;
-        els.theaterStage.textContent = `播放失败: ${error.message || error}`;
+        els.theaterStage.textContent = `注入失败: ${error.message || error}`;
       }
     });
     refresh();
