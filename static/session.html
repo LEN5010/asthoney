@@ -102,7 +102,7 @@
               </div>
               <div class="card-body">
                 <div id="worldCard"><div class="empty-state">世界只在这条 SSH 还活着时可读。</div></div>
-                <div class="footnote">当前目录、模板文件和本会话新建的文件都在内存里。连接断开后这里会空，转录还在。</div>
+                <div class="footnote">在线时读内存。连接断开后显示最后一次写入图数据库的快照，转录不受影响。</div>
               </div>
             </article>
 
@@ -348,11 +348,12 @@
 
     function renderWorld(world) {
       if (!world || world.available === false) {
-        worldMetaEl.textContent = "不在内存";
+        worldMetaEl.textContent = "无快照";
         worldCardEl.innerHTML = `<div class="empty-state">${escapeHtml(world && world.reason ? world.reason : "这条连接已经结束，世界没有留在内存里。")}</div>`;
         return;
       }
-      worldMetaEl.textContent = `${world.hostname || "host"} · ${world.cwd || "/"}`;
+      const sourceLabel = world.source === "live" ? "在线" : "快照";
+      worldMetaEl.textContent = `${sourceLabel} · ${world.hostname || "host"} · ${world.cwd || "/"}`;
       const created = new Set(world.created || []);
       const planted = new Set(world.planted || []);
       const files = (world.files || []).slice(0, 12).map((file) => {

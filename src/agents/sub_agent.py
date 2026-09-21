@@ -56,8 +56,18 @@ _PERSONA_LISTINGS: dict[str, dict[str, list[str]]] = {
     },
 }
 
+_PASSWD_TEXT = "\n".join(
+    [
+        "root:x:0:0:root:/root:/bin/bash",
+        "backup:x:34:34:backup:/var/backups:/usr/sbin/nologin",
+        "svc-backup:x:997:997::/srv/backup:/bin/bash",
+        "postgres:x:114:120:PostgreSQL administrator:/var/lib/postgresql:/bin/bash",
+    ]
+)
+
 _PERSONA_FILES: dict[str, dict[str, str]] = {
     "linux_server": {
+        "/etc/passwd": _PASSWD_TEXT,
         "/srv/backup/db.env": "\n".join(
             [
                 "DB_HOST=10.0.5.2",
@@ -74,6 +84,7 @@ _PERSONA_FILES: dict[str, dict[str, str]] = {
         ),
     },
     "database_server": {
+        "/etc/passwd": _PASSWD_TEXT,
         "/srv/backup/db.env": "\n".join(
             [
                 "DB_HOST=10.0.5.2",
@@ -88,6 +99,7 @@ _PERSONA_FILES: dict[str, dict[str, str]] = {
         "/srv/backup/pgpass": "10.0.5.2:5432:finance:svc_finance_sync:Sync-2026-Apr",
     },
     "oss_gateway": {
+        "/etc/passwd": _PASSWD_TEXT,
         "/srv/oss/config": "\n".join(
             [
                 "endpoint=oss-cn-hangzhou.aliyuncs.com",

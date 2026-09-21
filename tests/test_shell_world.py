@@ -1,5 +1,6 @@
 import asyncio
 
+from src.agents.main_agent import MainAgent
 from src.agents.sub_agent import SubAgent
 from src.config import AppSettings, DashScopeClient
 
@@ -68,6 +69,29 @@ def test_find_on_empty_directory_is_not_missing():
     assert created["response"] == ""
     found = asyncio.run(agent.handle_input("find /tmp/emptybin"))
     assert "No such file" not in found["response"]
+
+
+def test_closed_session_world_reads_the_stored_snapshot():
+    agent = object.__new__(MainAgent)
+    agent.active_sub_agents = {}
+
+    class _Store:
+        async def load_session_world(self, session_id: str) -> dict:
+            assert session_id == "s1"
+            return {"cwd": "/srv", "hostname": "web-pivot-01", "files": []}
+
+    agent.graph_db = _Store()
+    result = asyncio.run(agent.session_world("s1"))
+    assert result["source"] == "stored"
+    assert result["available"] is True
+    assert result["cwd"] == "/srv"
+
+
+def test_uname_uses_the_host_in_the_world():
+    result = asyncio.run(_agent(hostname="web-pivot-01").handle_input("uname -a"))
+    assert result["actor_mode"] == "interpreter"
+    assert "web-pivot-01" in result["response"]
+    assert "Linux" in result["response"]
 
 
 def test_database_secret_stays_off_the_pivot():

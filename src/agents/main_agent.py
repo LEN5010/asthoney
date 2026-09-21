@@ -134,27 +134,9 @@ class MainAgent:
             protocol=protocol,
             metadata={"destination_port": destination_port},
         )
-        await self.graph_db.record_connection(
-            session_id=session_id,
-            source_ip=source_ip,
-            current_asset_id=current_asset_id,
-            protocol=protocol,
-            payload=str(event["payload"]),
-        )
         is_new_session = session_id not in self.seen_sessions
         if is_new_session:
             self.seen_sessions.add(session_id)
-        await self.event_bus.publish(
-            "session.activity",
-            {
-                "session_id": session_id,
-                "source_ip": source_ip,
-                "protocol": protocol,
-                "payload": str(event["payload"])[:400],
-                "asset_id": current_asset_id,
-                "is_new_session": is_new_session,
-            },
-        )
 
         result = await self.graph.ainvoke(
             {
@@ -170,6 +152,24 @@ class MainAgent:
             response_asset_id = str(result["target_asset"].get("asset_id", current_asset_id))
         response_text = str(result.get("response", ""))
         response_prompt = str(result.get("prompt", ""))
+        await self.graph_db.record_connection(
+            session_id=session_id,
+            source_ip=source_ip,
+            current_asset_id=response_asset_id,
+            protocol=protocol,
+            payload=str(event["payload"]),
+        )
+        await self.event_bus.publish(
+            "session.activity",
+            {
+                "session_id": session_id,
+                "source_ip": source_ip,
+                "protocol": protocol,
+                "payload": str(event["payload"])[:400],
+                "asset_id": response_asset_id,
+                "is_new_session": is_new_session,
+            },
+        )
         if response_text or response_prompt:
             await self.graph_db.record_response(
                 session_id=session_id,
@@ -178,6 +178,8 @@ class MainAgent:
                 payload=response_text,
                 prompt=response_prompt,
             )
+        await self.graph_db.remember_location(session_id=session_id, asset_id=response_asset_id)
+        await self._persist_session_world(session_id)
         controls = await self._run_preemptive_controls(
             session_id=session_id,
             source_ip=source_ip,
@@ -222,18 +224,35 @@ class MainAgent:
         )
         return {"alert": alert, "action": action}
 
-    def session_world(self, session_id: str) -> dict[str, Any]:
+    async def _persist_session_world(self, session_id: str) -> None:
         agent = self.active_sub_agents.get(session_id)
         world = getattr(agent, "world", None)
         if world is None:
-            return {
-                "available": False,
-                "session_id": session_id,
-                "reason": "会话世界只留在还活着的连接里。进程重启或连接结束后，这里回到空，转录仍在图里。",
-            }
+            return
         snapshot = world.snapshot()
         snapshot["session_id"] = session_id
-        return snapshot
+        snapshot["source"] = "stored"
+        await self.graph_db.save_session_world(session_id, snapshot)
+
+    async def session_world(self, session_id: str) -> dict[str, Any]:
+        agent = self.active_sub_agents.get(session_id)
+        world = getattr(agent, "world", None)
+        if world is not None:
+            snapshot = world.snapshot()
+            snapshot["session_id"] = session_id
+            snapshot["source"] = "live"
+            return snapshot
+        stored = await self.graph_db.load_session_world(session_id)
+        if stored:
+            stored["available"] = True
+            stored["source"] = "stored"
+            stored["session_id"] = session_id
+            return stored
+        return {
+            "available": False,
+            "session_id": session_id,
+            "reason": "还没有写入过会话世界。",
+        }
 
     async def status(self) -> dict[str, Any]:
         alerts = await self.graph_db.recent_alerts(limit=5)

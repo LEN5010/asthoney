@@ -229,6 +229,48 @@ class GraphDB:
             },
         )
 
+    async def remember_location(self, *, session_id: str, asset_id: str) -> None:
+        """把会话当前资产记在 Session 上，并刷新 VISITED。"""
+        query = """
+        MATCH (s:Session {session_id: $session_id})
+        MATCH (a:Asset {asset_id: $asset_id})
+        SET s.current_asset_id = $asset_id,
+            s.current_hostname = a.hostname
+        MERGE (s)-[r:VISITED]->(a)
+        SET r.last_seen = datetime()
+        """
+        await self._run(query, {"session_id": session_id, "asset_id": asset_id})
+
+    async def save_session_world(self, session_id: str, snapshot: dict[str, Any]) -> None:
+        query = """
+        MATCH (s:Session {session_id: $session_id})
+        SET s.world_json = $world_json,
+            s.world_saved_at = datetime()
+        """
+        await self._run(
+            query,
+            {
+                "session_id": session_id,
+                "world_json": json.dumps(snapshot, ensure_ascii=False),
+            },
+        )
+
+    async def load_session_world(self, session_id: str) -> dict[str, Any] | None:
+        query = """
+        MATCH (s:Session {session_id: $session_id})
+        RETURN s.world_json AS world_json
+        """
+        records = await self._run_many(query, {"session_id": session_id})
+        if not records:
+            return None
+        raw = records[0].get("world_json")
+        if not raw:
+            return None
+        if isinstance(raw, str):
+            loaded = json.loads(raw)
+            return loaded if isinstance(loaded, dict) else None
+        return raw if isinstance(raw, dict) else None
+
     async def record_intent(
         self,
         *,
@@ -528,7 +570,7 @@ class GraphDB:
             last_seen: s.last_seen,
             entry_asset_id: entry.asset_id,
             entry_hostname: entry.hostname,
-            current_hostname: current_hostname,
+            current_hostname: coalesce(s.current_hostname, current_hostname),
             visited_hosts: visited_hosts,
             command_count: command_count,
             last_command_at: last_command_at,

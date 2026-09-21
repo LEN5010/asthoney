@@ -265,7 +265,7 @@ async def session_intents(request: Request, session_id: str) -> dict[str, Any]:
 
 @app.get("/sessions/{session_id}/world")
 async def session_world(request: Request, session_id: str) -> dict[str, Any]:
-    return request.app.state.main_agent.session_world(session_id)
+    return await request.app.state.main_agent.session_world(session_id)
 
 
 @app.get("/sessions/{session_id}/decisions")

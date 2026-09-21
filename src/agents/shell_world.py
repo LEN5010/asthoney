@@ -60,6 +60,8 @@ class ShellWorld:
             return self.hostname
         if name == "id":
             return f"uid=997({self.username}) gid=997({self.username}) groups=997({self.username})"
+        if name == "uname":
+            return f"Linux {self.hostname} 5.15.0-92-generic #102-Ubuntu SMP PREEMPT_DYNAMIC x86_64 GNU/Linux"
         if name in {"env", "printenv"}:
             return "\n".join(
                 [
