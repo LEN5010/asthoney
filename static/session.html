@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SSH Replay</title>
+  <title>终端回放 · ASTHONEY 欺骗蜜网</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -11,26 +11,29 @@
     <header class="topbar">
       <div class="topbar-left">
         <button class="sidebar-toggle" data-sidebar-toggle>菜单</button>
-        <a class="brand" href="/">Generative Infinite Deception Maze</a>
+        <a class="brand" href="/"><span class="brand-mark"></span>ASTHONEY<span class="brand-sub">生成式欺骗蜜网</span></a>
       </div>
       <div class="topbar-right">
         <span class="topbar-meta" id="sessionMeta">等待加载会话</span>
+        <span class="health-dot" id="healthDot">检测中</span>
       </div>
     </header>
 
     <div class="workspace">
       <aside class="sidebar">
         <div class="sidebar-group">
-          <div class="sidebar-label">Navigation</div>
+          <div class="sidebar-label">导航</div>
           <nav class="nav-list">
             <a class="nav-link" data-nav="overview" href="/"><span>总体态势</span><span class="nav-badge">Graph</span></a>
-            <a class="nav-link" data-nav="sessions" href="/sessions/view"><span>SSH 会话</span><span class="nav-badge">Logs</span></a>
+            <a class="nav-link" data-nav="sessions" href="/sessions/view"><span>SSH 会话</span><span class="nav-badge">Replay</span></a>
             <a class="nav-link" data-nav="docs" href="/docs"><span>API 文档</span><span class="nav-badge">OpenAPI</span></a>
           </nav>
         </div>
         <div class="sidebar-group">
-          <div class="sidebar-label">回放</div>
-          <div class="inline-meta"></div>
+          <div class="sidebar-label">系统状态</div>
+          <div class="shell-status" id="shellStatus">
+            <div class="shell-status-row"><span>加载中…</span></div>
+          </div>
         </div>
       </aside>
 
@@ -38,31 +41,35 @@
         <div class="content-header">
           <div>
             <h1 class="content-title">单会话终端回放</h1>
-            <div class="content-subtitle"></div>
+            <div class="content-subtitle" id="sessionChips">加载会话信息…</div>
+          </div>
+          <div class="header-actions">
+            <a class="link-button" href="/sessions/view">返回会话列表</a>
           </div>
         </div>
 
         <section class="panel-grid">
           <article class="card span-8">
             <div class="card-header">
-              <h2 class="card-title">Terminal Replay</h2>
-              <span class="card-meta" id="replayMeta">0 events</span>
+              <h2 class="card-title">终端回放</h2>
+              <span class="card-meta" id="replayMeta">0/0 事件</span>
             </div>
             <div class="card-body">
               <div class="terminal-wrap">
                 <div class="terminal-topbar">
                   <div class="terminal-controls">
-                    <button class="terminal-button" id="playBtn">播放</button>
-                    <button class="terminal-button" id="pauseBtn">暂停</button>
+                    <button class="terminal-button" id="playBtn">▶ 播放</button>
+                    <button class="terminal-button" id="pauseBtn">⏸ 暂停</button>
                     <button class="terminal-button" id="stepBtn">单步</button>
                     <button class="terminal-button" id="resetBtn">重置</button>
                   </div>
                   <div class="terminal-controls">
                     <button class="terminal-button" data-speed="1200">慢速</button>
-                    <button class="terminal-button" data-speed="700">标准</button>
+                    <button class="terminal-button is-active" data-speed="700">标准</button>
                     <button class="terminal-button" data-speed="350">快速</button>
                   </div>
                 </div>
+                <div class="replay-progress"><div class="fill" id="replayProgress"></div></div>
                 <div class="terminal-screen" id="terminalScreen">
                   <div class="empty-state">等待终端回放数据</div>
                 </div>
@@ -70,30 +77,49 @@
             </div>
           </article>
 
-          <aside class="span-4">
-            <div class="card">
+          <div class="span-4 column-stack">
+            <article class="card">
               <div class="card-header">
-                <h2 class="card-title">AI 分析</h2>
-                <span class="card-meta" id="analysisSource">pending</span>
+                <h2 class="card-title">AI 研判</h2>
+                <span class="pill neutral" id="analysisSource">pending</span>
               </div>
               <div class="card-body">
                 <div class="analysis-grid" id="analysisCard">
-                  <div class="empty-state">等待 AI 分析</div>
+                  <div class="empty-state">正在生成研判结果…</div>
                 </div>
+                <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+                  <button class="button" id="reanalyzeBtn" type="button">重新研判</button>
+                  <button class="button primary" id="controlsBtn" type="button">研判联动控制</button>
+                </div>
+                <div class="footnote" id="controlsResult">联动控制会依据研判结论产生告警与模拟隔离（需管理令牌）。</div>
               </div>
-            </div>
-            <div class="card" style="margin-top:16px;">
+            </article>
+
+            <article class="card">
               <div class="card-header">
-                <h2 class="card-title">Intent Timeline</h2>
-                <span class="card-meta" id="intentMeta">0 intents</span>
+                <h2 class="card-title">决策轨迹</h2>
+                <span class="card-meta" id="decisionMeta">0 条</span>
               </div>
               <div class="card-body">
-                <div class="stack" id="intentList">
+                <div class="decision-list" id="decisionList">
+                  <div class="empty-state">这条会话还没有决策轨迹</div>
+                </div>
+                <div class="footnote">回放走到某条命令时，对应的分析、规划和护栏会高亮。</div>
+              </div>
+            </article>
+
+            <article class="card">
+              <div class="card-header">
+                <h2 class="card-title">意图时间线</h2>
+                <span class="card-meta" id="intentMeta">0 条</span>
+              </div>
+              <div class="card-body">
+                <div class="timeline" id="intentList">
                   <div class="empty-state">暂无意图数据</div>
                 </div>
               </div>
-            </div>
-          </aside>
+            </article>
+          </div>
         </section>
       </main>
     </div>
@@ -106,44 +132,45 @@
     const params = new URLSearchParams(window.location.search);
     const sessionId = params.get("session_id");
     const sessionMetaEl = document.getElementById("sessionMeta");
+    const sessionChipsEl = document.getElementById("sessionChips");
     const terminalScreenEl = document.getElementById("terminalScreen");
     const replayMetaEl = document.getElementById("replayMeta");
+    const replayProgressEl = document.getElementById("replayProgress");
     const analysisCardEl = document.getElementById("analysisCard");
     const analysisSourceEl = document.getElementById("analysisSource");
     const intentListEl = document.getElementById("intentList");
     const intentMetaEl = document.getElementById("intentMeta");
+    const decisionListEl = document.getElementById("decisionList");
+    const decisionMetaEl = document.getElementById("decisionMeta");
+    const controlsResultEl = document.getElementById("controlsResult");
     const playBtn = document.getElementById("playBtn");
     const pauseBtn = document.getElementById("pauseBtn");
     const stepBtn = document.getElementById("stepBtn");
     const resetBtn = document.getElementById("resetBtn");
+    const reanalyzeBtn = document.getElementById("reanalyzeBtn");
+    const controlsBtn = document.getElementById("controlsBtn");
     const speedButtons = document.querySelectorAll("[data-speed]");
 
     let transcript = [];
+    let decisions = [];
     let replayIndex = 0;
     let renderedReplayIndex = 0;
     let replayTimer = null;
     let replaySpeed = 700;
 
     function buildTerminalLine(item) {
+      const meta = `<div class="terminal-line meta">${fmtTime(item.created_at)} · ${escapeHtml(item.hostname || "unknown")}</div>`;
       if (item.direction === "attacker_to_maze") {
-        return `
-          <div class="terminal-line meta">${escapeHtml(item.created_at || "n/a")} | ${escapeHtml(item.hostname || "unknown")}</div>
-          <div class="terminal-line prompt">${escapeHtml(item.prompt || "$ ")}${escapeHtml(item.payload || "")}</div>
-        `;
+        return `${meta}<div class="terminal-line prompt">${escapeHtml(item.prompt || "$ ")}<span class="cmd">${escapeHtml(item.payload || "")}</span></div>`;
       }
-      const promptLine = item.prompt ? `<div class="terminal-line prompt">${escapeHtml(item.prompt)}</div>` : "";
       const outputLine = item.payload ? `<div class="terminal-line output">${escapeHtml(item.payload)}</div>` : "";
-      return `
-        <div class="terminal-line meta">${escapeHtml(item.created_at || "n/a")} | ${escapeHtml(item.hostname || "unknown")}</div>
-        ${outputLine}
-        ${promptLine}
-      `;
+      return `${meta}${outputLine}`;
     }
 
-    function appendReplayItems(items) {
-      if (!items.length) return;
-      terminalScreenEl.insertAdjacentHTML("beforeend", items.map(buildTerminalLine).join(""));
-      terminalScreenEl.scrollTop = terminalScreenEl.scrollHeight;
+    function updateReplayMeta() {
+      replayMetaEl.textContent = `${replayIndex}/${transcript.length} 事件`;
+      const pct = transcript.length ? Math.round((replayIndex / transcript.length) * 100) : 0;
+      replayProgressEl.style.width = `${pct}%`;
     }
 
     function renderReplayFrame() {
@@ -158,10 +185,45 @@
       if (replayIndex === 0) {
         terminalScreenEl.innerHTML = "";
         renderedReplayIndex = 0;
+        renderDecisions();
         return;
       }
-      appendReplayItems(transcript.slice(renderedReplayIndex, replayIndex));
+      const items = transcript.slice(renderedReplayIndex, replayIndex);
+      if (items.length) {
+        terminalScreenEl.insertAdjacentHTML("beforeend", items.map(buildTerminalLine).join(""));
+        terminalScreenEl.scrollTop = terminalScreenEl.scrollHeight;
+      }
       renderedReplayIndex = replayIndex;
+      renderDecisions();
+    }
+
+    function activeDecisionIndex() {
+      const seen = transcript.slice(0, replayIndex).filter((item) => item.direction === "attacker_to_maze").length;
+      return seen - 1;
+    }
+
+    function renderDecisions() {
+      decisionMetaEl.textContent = `${decisions.length} 条`;
+      if (!decisions.length) {
+        decisionListEl.innerHTML = '<div class="empty-state">这条会话还没有决策轨迹</div>';
+        return;
+      }
+      const active = activeDecisionIndex();
+      decisionListEl.innerHTML = decisions.map((decision, index) => {
+        const steps = decision.steps || [];
+        const lines = steps.map((step) => `<div class="role-line"><b>${escapeHtml(step.title || step.role || "")}</b> ${escapeHtml(step.detail || "")}</div>`).join("");
+        return `
+          <article class="decision-item${index === active ? " is-active" : ""}">
+            <div class="timeline-head">
+              <strong class="mono">${escapeHtml(truncate(decision.raw_input || "空输入", 42))}</strong>
+              <span class="timeline-time">${escapeHtml(decision.strategy || "")}</span>
+            </div>
+            ${lines}
+          </article>
+        `;
+      }).join("");
+      const current = decisionListEl.querySelector(".is-active");
+      if (current) current.scrollIntoView({ block: "nearest" });
     }
 
     function stopReplay() {
@@ -178,7 +240,7 @@
       }
       replayIndex += 1;
       renderReplayFrame();
-      replayMetaEl.textContent = `${replayIndex}/${transcript.length} events`;
+      updateReplayMeta();
     }
 
     function startReplay() {
@@ -196,7 +258,7 @@
       stopReplay();
       replayIndex = 0;
       renderedReplayIndex = 0;
-      replayMetaEl.textContent = `0/${transcript.length} events`;
+      updateReplayMeta();
       renderReplayFrame();
     }
 
@@ -207,59 +269,119 @@
     speedButtons.forEach((button) => {
       button.addEventListener("click", () => {
         replaySpeed = Number(button.getAttribute("data-speed")) || 700;
+        speedButtons.forEach((item) => item.classList.toggle("is-active", item === button));
         if (replayTimer) startReplay();
       });
     });
 
     function renderAnalysis(analysis) {
-      analysisSourceEl.textContent = escapeHtml(analysis.analysis_source || "unknown");
+      const source = analysis.analysis_source || "unknown";
+      analysisSourceEl.textContent = source === "dashscope" ? "大模型研判" : source === "heuristic" ? "启发式研判" : source;
+      analysisSourceEl.className = `pill ${source === "dashscope" ? "good" : "warning"}`;
+      const confidence = Math.round((Number(analysis.confidence) || 0) * 100);
+      const techniques = (analysis.techniques || []).map((item) => `<span class="chip">${escapeHtml(item)}</span>`).join("");
+      const reasons = (analysis.likely_non_human_reasons || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+      const actions = (analysis.suggested_actions || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
       analysisCardEl.innerHTML = `
-        <div class="list-item"><strong>结论摘要</strong><div class="inline-meta">${escapeHtml(analysis.summary || "暂无结论")}</div></div>
-        <div class="list-item"><strong>攻击目的</strong><div class="inline-meta">${escapeHtml(analysis.objective || "未知")}</div></div>
-        <div class="list-item"><strong>风险等级</strong><div style="margin-top:8px;"><span class="pill ${severityClass(analysis.risk_level)}">${escapeHtml(analysis.risk_level || "unknown")}</span></div></div>
-        <div class="list-item"><strong>非真人 Agent 判断</strong><div class="inline-meta">${analysis.likely_non_human_test_agent ? "是" : "否"}<br>${escapeHtml((analysis.likely_non_human_reasons || []).join(" | ") || "无")}</div></div>
-        <div class="list-item"><strong>手段提炼</strong><div class="inline-meta">${escapeHtml((analysis.techniques || []).join(" | ") || "无")}</div></div>
-        <div class="list-item"><strong>处置建议</strong><div class="inline-meta">${escapeHtml((analysis.suggested_actions || []).join("\n") || "无")}</div></div>
+        <div class="analysis-kv"><div class="k">结论摘要</div><div class="v">${escapeHtml(analysis.summary || "暂无结论")}</div></div>
+        <div class="analysis-kv"><div class="k">攻击目的</div><div class="v">${escapeHtml(analysis.objective || "未知")}</div></div>
+        ${analysis.threat_score != null ? `<div class="analysis-kv"><div class="k">可解释风险分</div><div class="v">${escapeHtml(String(analysis.threat_score))} · ${severityPill(analysis.threat_band || analysis.risk_level)}</div></div>` : ""}
+        <div class="analysis-kv">
+          <div class="k">风险与置信度</div>
+          <div class="v" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            ${severityPill(analysis.risk_level)}
+            <span style="display:inline-flex; align-items:center; gap:8px;">
+              <span class="confidence-track" style="margin-top:0;"><span class="confidence-fill" style="display:block; width:${confidence}%;"></span></span>
+              <span class="mono" style="font-size:11px; color:var(--ink-2);">${confidence}%</span>
+            </span>
+          </div>
+        </div>
+        <div class="analysis-kv">
+          <div class="k">非真人 Agent 判定</div>
+          <div class="v">
+            <span class="pill ${analysis.likely_non_human_test_agent ? "critical" : "good"}">${analysis.likely_non_human_test_agent ? "疑似自动化 Agent" : "未见 Agent 特征"}</span>
+            ${reasons ? `<ul class="action-list" style="margin-top:8px;">${reasons}</ul>` : ""}
+          </div>
+        </div>
+        ${techniques ? `<div class="analysis-kv"><div class="k">战术手段</div><div class="v tag-row">${techniques}</div></div>` : ""}
+        ${actions ? `<div class="analysis-kv"><div class="k">处置建议</div><ul class="action-list">${actions}</ul></div>` : ""}
       `;
     }
 
     function renderIntents(intents) {
-      intentMetaEl.textContent = `${intents.length} intents`;
+      intentMetaEl.textContent = `${intents.length} 条`;
       if (!intents.length) {
         intentListEl.innerHTML = '<div class="empty-state">暂无意图数据</div>';
         return;
       }
-      intentListEl.innerHTML = intents.map((intent) => `
-        <div class="list-item">
-          <strong>${escapeHtml(intent.category || "unknown")}</strong>
-          <div class="inline-meta">
-            ${escapeHtml(intent.created_at || "n/a")}<br>
-            confidence=${escapeHtml(intent.confidence || "n/a")}<br>
-            ${escapeHtml(intent.summary || "")}
+      intentListEl.innerHTML = intents.map((intent) => {
+        const meta = intentMeta(intent.category);
+        const confidence = Math.round((Number(intent.confidence) || 0) * 100);
+        return `
+          <div class="timeline-item ${meta.severity}">
+            <div class="timeline-head">
+              <strong>${escapeHtml(meta.label)}</strong>
+              <span class="timeline-time">${fmtTime(intent.created_at)}</span>
+            </div>
+            <div class="timeline-body">
+              <span class="mono">${escapeHtml(truncate(intent.raw_input || "", 46))}</span><br>
+              ${escapeHtml(intent.summary || "")}
+              <div class="confidence-track"><div class="confidence-fill" style="width:${confidence}%;"></div></div>
+            </div>
           </div>
-        </div>
-      `).join("");
+        `;
+      }).join("");
+    }
+
+    async function loadDecisions() {
+      try {
+        const payload = await fetchJSON(`/sessions/${encodeURIComponent(sessionId)}/decisions`);
+        decisions = payload.decisions || [];
+        renderDecisions();
+      } catch (error) {
+        decisionListEl.innerHTML = `<div class="empty-state">决策轨迹加载失败: ${escapeHtml(String(error.message || error))}</div>`;
+      }
     }
 
     async function loadAnalysis() {
+      analysisSourceEl.textContent = "研判中…";
+      analysisSourceEl.className = "pill neutral";
       try {
-        const analysisResp = await fetch(`/sessions/${encodeURIComponent(sessionId)}/analysis`);
-        const analysis = await analysisResp.json();
+        const analysis = await fetchJSON(`/sessions/${encodeURIComponent(sessionId)}/analysis`);
         renderAnalysis(analysis);
       } catch (error) {
-        analysisSourceEl.textContent = "error";
-        analysisCardEl.innerHTML = `<div class="empty-state">AI 分析加载失败: ${escapeHtml(String(error))}</div>`;
+        analysisSourceEl.textContent = "失败";
+        analysisCardEl.innerHTML = `<div class="empty-state">AI 分析加载失败: ${escapeHtml(String(error.message || error))}</div>`;
       }
     }
+
+    reanalyzeBtn.addEventListener("click", loadAnalysis);
+
+    controlsBtn.addEventListener("click", async () => {
+      controlsBtn.disabled = true;
+      controlsResultEl.textContent = "联动控制执行中…";
+      try {
+        const result = await adminFetch(`/sessions/${encodeURIComponent(sessionId)}/analysis/controls`, { method: "POST" });
+        const alerts = (result.alerts || []).length;
+        const actions = (result.actions || []).length;
+        controlsResultEl.textContent = alerts || actions
+          ? `联动完成：新增告警 ${alerts} 条、模拟隔离动作 ${actions} 条。`
+          : "联动完成：本次研判未达到触发条件，或该会话已处理过。";
+      } catch (error) {
+        controlsResultEl.textContent = `联动失败: ${error.message || error}`;
+      } finally {
+        controlsBtn.disabled = false;
+      }
+    });
 
     async function loadSession() {
       if (!sessionId) {
         sessionMetaEl.textContent = "缺少 session_id 参数";
+        sessionChipsEl.textContent = "URL 中缺少 session_id 参数";
         return;
       }
       try {
-        const detailResp = await fetch(`/sessions/${encodeURIComponent(sessionId)}`);
-        const detail = await detailResp.json();
+        const detail = await fetchJSON(`/sessions/${encodeURIComponent(sessionId)}`);
         const session = detail.session || {};
         transcript = (detail.transcript || []).map((item, index, items) => {
           if (item.direction === "attacker_to_maze") {
@@ -270,13 +392,23 @@
           }
           return item;
         });
-        sessionMetaEl.textContent = `${session.session_id || "unknown"} | ${session.source_ip || "unknown"} | ${session.entry_hostname || session.entry_asset_id || "unknown"}`;
-        replayMetaEl.textContent = `0/${transcript.length} events`;
+        sessionMetaEl.textContent = truncate(session.session_id || "unknown", 36);
+        sessionChipsEl.innerHTML = `
+          <span class="tag-row">
+            <span class="chip">会话 <span class="mono">&nbsp;${escapeHtml(truncate(session.session_id || "unknown", 26))}</span></span>
+            <span class="chip">来源 <span class="mono">&nbsp;${escapeHtml(session.source_ip || "unknown")}</span></span>
+            <span class="chip">入口 <span class="mono">&nbsp;${escapeHtml(session.entry_hostname || session.entry_asset_id || "unknown")}</span></span>
+            <span class="chip">始于 ${fmtTime(session.created_at)}</span>
+            <span class="chip">${transcript.length} 个事件</span>
+          </span>
+        `;
+        updateReplayMeta();
         renderReplayFrame();
         renderIntents(detail.intents || []);
+        void loadDecisions();
         void loadAnalysis();
       } catch (error) {
-        sessionMetaEl.textContent = `加载失败: ${error}`;
+        sessionMetaEl.textContent = `加载失败: ${error.message || error}`;
       }
     }
 

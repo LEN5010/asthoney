@@ -8,9 +8,21 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
 
+from src.agents.deception_planner import (
+    build_trace_steps,
+    critique_output,
+    observation_metadata,
+    plan_deception,
+)
 from src.agents.sub_agent import SubAgent
+from src.analytics.attack_matrix import build_matrix
+from src.analytics.threat_profile import compute_threat_score
 from src.config import AppSettings, DashScopeClient, DashScopeInvocationError
 from src.database.graph_db import GraphDB
+from src.realtime.event_bus import EventBus
+
+# 命令间隔不超过该秒数，且占多数时，视为脚本或代理批量探测。
+NON_HUMAN_INTERVAL_SECONDS = 1.5
 
 
 class MazeState(TypedDict, total=False):
@@ -23,6 +35,12 @@ class MazeState(TypedDict, total=False):
     response: str
     prompt: str
     close: bool
+    plan: dict[str, Any]
+    terminal_intent: dict[str, Any]
+    actor_mode: str
+    guardrail: str
+    critic: dict[str, Any]
+    decision: dict[str, Any]
 
 
 class MainAgent:
@@ -32,26 +50,61 @@ class MainAgent:
         settings: AppSettings,
         graph_db: GraphDB,
         dashscope_client: DashScopeClient,
+        event_bus: EventBus | None = None,
     ) -> None:
         self.settings = settings
         self.graph_db = graph_db
         self.dashscope_client = dashscope_client
+        self.event_bus = event_bus or EventBus()
         self.logger = logging.getLogger(self.__class__.__name__)
         self.active_sub_agents: dict[str, SubAgent] = {}
         self.session_assets: dict[str, str] = {}
         self.session_control_flags: set[str] = set()
         self.quarantined_sources: set[str] = set()
+        self.seen_sessions: set[str] = set()
+        self.session_categories: dict[str, list[str]] = {}
+        self.non_human_sources: set[str] = set()
         self.mcp_trap_hits = 0
         self.graph = self._build_state_graph()
 
     async def bootstrap(self) -> None:
         await self._seed_topology()
+        await self._hydrate_runtime_state()
+
+    async def _hydrate_runtime_state(self) -> None:
+        """从已落库的告警/隔离动作恢复进程内计数，避免重启后面板归零。"""
+        actions = await self.graph_db.recent_actions(limit=200)
+        alerts = await self.graph_db.recent_alerts(limit=200)
+        self._hydrate_runtime_from_records(actions=actions, alerts=alerts)
+
+    def _hydrate_runtime_from_records(
+        self,
+        *,
+        actions: list[dict[str, Any]],
+        alerts: list[dict[str, Any]],
+    ) -> None:
+        for action in actions:
+            source = str(action.get("source") or "")
+            if source and str(action.get("kind") or "") == "quarantine":
+                self.quarantined_sources.add(source)
+        trap_hits = 0
+        for alert in alerts:
+            source = str(alert.get("source") or "")
+            alert_type = str(alert.get("alert_type") or "")
+            if alert_type == "agent_oriented_mcp_trap":
+                trap_hits += 1
+            if alert_type == "suspected_non_human_test_agent" and source:
+                self.non_human_sources.add(source)
+        self.mcp_trap_hits = max(self.mcp_trap_hits, trap_hits)
 
     async def close(self) -> None:
         self.active_sub_agents.clear()
         self.session_assets.clear()
         self.session_control_flags.clear()
         self.quarantined_sources.clear()
+        self.seen_sessions.clear()
+        self.session_categories.clear()
+        self.non_human_sources.clear()
 
     async def reset_runtime_state(self) -> None:
         await self.close()
@@ -87,6 +140,20 @@ class MainAgent:
             current_asset_id=current_asset_id,
             protocol=protocol,
             payload=str(event["payload"]),
+        )
+        is_new_session = session_id not in self.seen_sessions
+        if is_new_session:
+            self.seen_sessions.add(session_id)
+        await self.event_bus.publish(
+            "session.activity",
+            {
+                "session_id": session_id,
+                "source_ip": source_ip,
+                "protocol": protocol,
+                "payload": str(event["payload"])[:400],
+                "asset_id": current_asset_id,
+                "is_new_session": is_new_session,
+            },
         )
 
         result = await self.graph.ainvoke(
@@ -136,7 +203,7 @@ class MainAgent:
         agent_id: str | None = None,
     ) -> dict[str, Any]:
         self.mcp_trap_hits += 1
-        alert = await self.graph_db.record_alert(
+        alert = await self._raise_alert(
             alert_type="agent_oriented_mcp_trap",
             severity="critical",
             source=source,
@@ -172,9 +239,17 @@ class MainAgent:
         transcript = detail.get("transcript", [])
         intents = detail.get("intents", [])
         heuristic = self._heuristic_analysis(detail)
+        scoring = await self._session_threat_score(session_id, detail, heuristic)
+        attack_matrix = build_matrix(intents, await self._session_alerts(session_id))
+        enrichment = {
+            "threat_score": scoring["score"],
+            "threat_band": scoring["band"],
+            "score_components": scoring["components"],
+            "attack_matrix": attack_matrix,
+        }
 
         if not self.dashscope_client.is_configured:
-            return heuristic
+            return {**heuristic, **enrichment}
 
         messages = self._build_analysis_messages(detail)
         try:
@@ -183,6 +258,7 @@ class MainAgent:
             return {
                 **heuristic,
                 **parsed,
+                **enrichment,
                 "session_id": session_id,
                 "transcript_items": len(transcript),
                 "intent_count": len(intents),
@@ -190,7 +266,36 @@ class MainAgent:
             }
         except (DashScopeInvocationError, ValueError, KeyError, json.JSONDecodeError):
             self.logger.warning("Falling back to heuristic analysis for session %s", session_id)
-            return heuristic
+            return {**heuristic, **enrichment}
+
+    async def _session_alerts(self, session_id: str) -> list[dict[str, Any]]:
+        """取与该会话相关的告警（用于矩阵与评分）。"""
+        alerts = await self.graph_db.recent_alerts(limit=100)
+        return [
+            alert
+            for alert in alerts
+            if str((alert.get("details") or {}).get("session_id", "")) == session_id
+        ]
+
+    async def _session_threat_score(
+        self,
+        session_id: str,
+        detail: dict[str, Any],
+        heuristic: dict[str, Any],
+    ) -> dict[str, Any]:
+        intents = detail.get("intents", [])
+        categories = [str(item.get("category", "")) for item in intents if item.get("category")]
+        commands = [
+            item
+            for item in detail.get("transcript", [])
+            if item.get("direction") == "attacker_to_maze"
+        ]
+        return compute_threat_score(
+            categories=categories,
+            alerts=await self._session_alerts(session_id),
+            likely_non_human=bool(heuristic.get("likely_non_human_test_agent")),
+            command_count=len(commands),
+        )
 
     async def trigger_session_analysis_controls(self, session_id: str) -> dict[str, Any]:
         detail = await self.graph_db.session_detail(session_id)
@@ -203,7 +308,7 @@ class MainAgent:
             flag = f"{session_id}:analysis:non_human"
             if flag not in self.session_control_flags:
                 self.session_control_flags.add(flag)
-                alert = await self.graph_db.record_alert(
+                alert = await self._raise_alert(
                     alert_type="suspected_non_human_test_agent",
                     severity="high",
                     source=source_ip,
@@ -227,53 +332,100 @@ class MainAgent:
     def _build_state_graph(self):
         workflow = StateGraph(MazeState)
         workflow.add_node("analyze", self._analyze_event)
+        workflow.add_node("plan", self._plan_event)
         workflow.add_node("route", self._route_event)
         workflow.add_node("engage", self._engage_sub_agent)
+        workflow.add_node("critique", self._critique_event)
 
         workflow.set_entry_point("analyze")
-        workflow.add_edge("analyze", "route")
+        workflow.add_edge("analyze", "plan")
+        workflow.add_edge("plan", "route")
         workflow.add_conditional_edges(
             "route",
             self._choose_next_node,
             {
                 "engage": "engage",
-                "end": END,
+                "critique": "critique",
             },
         )
-        workflow.add_edge("engage", END)
+        workflow.add_edge("engage", "critique")
+        workflow.add_edge("critique", END)
         return workflow.compile()
 
     async def _analyze_event(self, state: MazeState) -> MazeState:
         event = state["event"]
         payload = str(event.get("payload", ""))
         intent = self._infer_intent(payload, str(event["protocol"]))
-        await self.graph_db.record_intent(
-            session_id=state["session_id"],
-            asset_id=state["current_asset_id"],
-            category=intent["category"],
-            confidence=float(intent["confidence"]),
-            raw_input=payload,
-            summary=str(intent["summary"]),
-            metadata={"protocol": event["protocol"]},
-        )
+        seen = self.session_categories.setdefault(state["session_id"], [])
+        seen.append(str(intent["category"]))
         return {"intent": intent}
+
+    async def _plan_event(self, state: MazeState) -> MazeState:
+        event = state["event"]
+        asset: dict[str, Any] | None = None
+        neighbors: list[dict[str, Any]] = []
+        try:
+            local_view = await self.graph_db.fetch_local_view(state["current_asset_id"])
+            asset = local_view.get("asset")
+            neighbors = list(local_view.get("neighbors") or [])
+        except Exception:
+            self.logger.debug("Local view unavailable while planning", exc_info=True)
+        plan = plan_deception(
+            intent=state["intent"],
+            payload=str(event.get("payload", "")),
+            protocol=str(event.get("protocol", "")),
+            current_asset=asset,
+            neighbors=neighbors,
+            seen_categories=list(self.session_categories.get(state["session_id"], [])),
+        )
+        return {"plan": plan}
 
     async def _route_event(self, state: MazeState) -> MazeState:
         session_id = state["session_id"]
         intent = state["intent"]
+        plan = state.get("plan") or {}
         existing_sub_agent = self.active_sub_agents.get(session_id)
 
-        if existing_sub_agent and not intent.get("target_ip"):
+        if plan.get("strategy") == "banner" or not intent.get("requires_subagent", False):
+            response = self._static_response(state["event"])
             return {
-                "route": "engage",
-                "target_asset": existing_sub_agent.asset_snapshot,
+                "route": "end",
+                "response": response,
+                "close": False,
+                "actor_mode": "static",
+                "guardrail": "static",
             }
 
-        if not intent.get("requires_subagent", False):
-            response = self._static_response(state["event"])
-            return {"route": "end", "response": response, "close": False}
+        if plan.get("strategy") != "pivot":
+            if existing_sub_agent and not intent.get("target_ip"):
+                return {"route": "engage", "target_asset": existing_sub_agent.asset_snapshot}
+            current = await self.graph_db.fetch_asset(state["current_asset_id"])
+            if current and current.get("asset_type") == "edge_gateway":
+                local_view = await self.graph_db.fetch_local_view(state["current_asset_id"])
+                neighbors = [item for item in local_view.get("neighbors") or [] if item]
+                neighbor = next((item for item in neighbors if item.get("asset_id") == "asset:10.0.5.1"), None)
+                if neighbor is None:
+                    neighbor = next(
+                        (
+                            item
+                            for item in neighbors
+                            if not (item.get("metadata") or {}).get("jit_synthesized")
+                        ),
+                        None,
+                    )
+                if neighbor is None and neighbors:
+                    neighbor = neighbors[0]
+                if neighbor:
+                    return {"route": "engage", "target_asset": neighbor}
+            if current:
+                return {"route": "engage", "target_asset": current}
+            if existing_sub_agent:
+                return {"route": "engage", "target_asset": existing_sub_agent.asset_snapshot}
 
-        if existing_sub_agent and intent.get("target_ip") == existing_sub_agent.asset_snapshot.get("ip_address"):
+        if existing_sub_agent and (
+            not intent.get("target_ip")
+            or intent.get("target_ip") == existing_sub_agent.asset_snapshot.get("ip_address")
+        ):
             target_asset = existing_sub_agent.asset_snapshot
         else:
             target_asset = await self.graph_db.synthesize_next_hop(
@@ -291,17 +443,8 @@ class MainAgent:
             source_ip=str(event["source_ip"]),
             target_asset=state["target_asset"],
         )
-        result = await sub_agent.handle_input(str(event["payload"]))
-        extracted_intent = result.get("intent", {})
-        await self.graph_db.record_intent(
-            session_id=state["session_id"],
-            asset_id=sub_agent.asset_id,
-            category=str(extracted_intent.get("category", "interactive_shell")),
-            confidence=float(extracted_intent.get("confidence", 0.5)),
-            raw_input=str(event["payload"]),
-            summary=str(extracted_intent.get("summary", "sub-agent interaction")),
-            metadata={"source": "sub_agent"},
-        )
+        result = await sub_agent.handle_input(str(event["payload"]), plan=state.get("plan"))
+        extracted_intent = result.get("intent") if isinstance(result.get("intent"), dict) else {}
         if result.get("close"):
             self.active_sub_agents.pop(state["session_id"], None)
         return {
@@ -309,12 +452,107 @@ class MainAgent:
             "prompt": str(result.get("prompt", sub_agent.prompt)),
             "close": bool(result.get("close", False)),
             "target_asset": sub_agent.asset_snapshot,
+            "actor_mode": str(result.get("actor_mode") or "deterministic"),
+            "guardrail": str(result.get("guardrail") or "pass"),
+            "terminal_intent": extracted_intent,
         }
+
+    async def _critique_event(self, state: MazeState) -> MazeState:
+        """检查终端输出。告警和隔离仍留在图外面。"""
+        event = state["event"]
+        command = str(event.get("payload", ""))
+        response = str(state.get("response", ""))
+        actor_mode = str(state.get("actor_mode") or "deterministic")
+        guardrail = str(state.get("guardrail") or "pass")
+        critic = critique_output(
+            command=command,
+            response=response,
+            actor_mode=actor_mode,
+            guardrail=guardrail,
+        )
+        plan = dict(state.get("plan") or {})
+        intent = dict(state.get("intent") or {})
+        steps = build_trace_steps(intent=intent, plan=plan, actor_mode=actor_mode, critic=critic)
+        from_asset_id = str(state.get("current_asset_id") or "")
+        target = state.get("target_asset") if isinstance(state.get("target_asset"), dict) else {}
+        to_asset_id = str((target or {}).get("asset_id") or from_asset_id)
+        await self._record_observed_intent(
+            state=state,
+            intent=intent,
+            plan=plan,
+            asset_id=to_asset_id,
+        )
+        decision = await self.graph_db.record_decision(
+            session_id=state["session_id"],
+            asset_id=to_asset_id,
+            raw_input=command,
+            strategy=str(plan.get("strategy") or ""),
+            steps=steps,
+        )
+        await self.event_bus.publish(
+            "agent.trace",
+            {
+                "session_id": state["session_id"],
+                "source_ip": str(event.get("source_ip", "unknown")),
+                "raw_input": command[:200],
+                "from_asset_id": from_asset_id,
+                "to_asset_id": to_asset_id,
+                "asset_id": to_asset_id,
+                "strategy": plan.get("strategy"),
+                "steps": steps,
+                "decision_id": decision.get("decision_id"),
+            },
+        )
+        return {"critic": critic, "decision": decision}
+
+    async def _record_observed_intent(
+        self,
+        *,
+        state: MazeState,
+        intent: dict[str, Any],
+        plan: dict[str, Any],
+        asset_id: str,
+    ) -> None:
+        """每条输入只写一条意图，挂在真正应答的资产上。"""
+        if not asset_id:
+            return
+        event = state["event"]
+        payload = str(event.get("payload", ""))
+        category = str(intent.get("category") or "unknown")
+        terminal_intent = state.get("terminal_intent") if isinstance(state.get("terminal_intent"), dict) else None
+        await self.graph_db.record_intent(
+            session_id=state["session_id"],
+            asset_id=asset_id,
+            category=category,
+            confidence=float(intent.get("confidence") or 0.0),
+            raw_input=payload,
+            summary=str(intent.get("summary") or ""),
+            metadata=observation_metadata(
+                protocol=str(event.get("protocol") or ""),
+                plan=plan,
+                analyst_category=category,
+                terminal_intent=terminal_intent,
+            ),
+        )
+        await self.event_bus.publish(
+            "intent.detected",
+            {
+                "session_id": state["session_id"],
+                "source_ip": str(event.get("source_ip", "unknown")),
+                "category": category,
+                "confidence": float(intent.get("confidence") or 0.0),
+                "summary": str(intent.get("summary") or ""),
+                "raw_input": payload[:200],
+                "severity": self._intent_severity(category),
+                "asset_id": asset_id,
+                "strategy": plan.get("strategy"),
+            },
+        )
 
     def _choose_next_node(self, state: MazeState) -> str:
         if state.get("route") == "engage":
             return "engage"
-        return "end"
+        return "critique"
 
     async def _get_or_create_sub_agent(
         self,
@@ -578,7 +816,7 @@ class MainAgent:
             flag = f"{session_id}:intent:{category}"
             if flag not in self.session_control_flags:
                 self.session_control_flags.add(flag)
-                alert = await self.graph_db.record_alert(
+                alert = await self._raise_alert(
                     alert_type="high_risk_intent_detected",
                     severity=severity,
                     source=source_ip,
@@ -617,7 +855,7 @@ class MainAgent:
                     ],
                     detail.get("transcript", []),
                 )
-                alert = await self.graph_db.record_alert(
+                alert = await self._raise_alert(
                     alert_type="suspected_non_human_test_agent",
                     severity="high",
                     source=source_ip,
@@ -714,7 +952,7 @@ class MainAgent:
         if len(commands) >= 6 and self._has_testing_sequence(commands):
             return True
         intervals = self._command_intervals(transcript)
-        if intervals and len(intervals) >= 4 and sum(1 for item in intervals if item <= 1.5) >= max(3, len(intervals) // 2):
+        if intervals and len(intervals) >= 4 and sum(1 for item in intervals if item <= NON_HUMAN_INTERVAL_SECONDS) >= max(3, len(intervals) // 2):
             return True
         return False
 
@@ -723,7 +961,7 @@ class MainAgent:
         if self._has_testing_sequence(commands):
             reasons.append("命令序列更像自动化真实性基准测试，而不是人工攻击者的自然操作流。")
         intervals = self._command_intervals(transcript)
-        if intervals and sum(1 for item in intervals if item <= 1.5) >= max(3, len(intervals) // 2):
+        if intervals and sum(1 for item in intervals if item <= NON_HUMAN_INTERVAL_SECONDS) >= max(3, len(intervals) // 2):
             reasons.append("多条命令以接近固定的低时延节奏到达，具备脚本或智能体批量探测特征。")
         if any(command in {"clear", "root", "sudo", "su"} for command in commands):
             reasons.append("会话包含典型沙箱探针命令，常见于非真人测试 Agent 的环境校验流程。")
@@ -752,6 +990,28 @@ class MainAgent:
             return False
         return self._is_likely_non_human_agent(commands, transcript)
 
+    async def _raise_alert(
+        self,
+        *,
+        alert_type: str,
+        severity: str,
+        source: str,
+        details: dict[str, Any],
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """落库告警并实时广播，保证面板与 WebSocket 视图一致。"""
+        alert = await self.graph_db.record_alert(
+            alert_type=alert_type,
+            severity=severity,
+            source=source,
+            details=details,
+            session_id=session_id,
+        )
+        if alert_type == "suspected_non_human_test_agent":
+            self.non_human_sources.add(source)
+        await self.event_bus.publish("alert.raised", {**alert, "session_id": session_id})
+        return alert
+
     async def _quarantine_source_once(self, source: str, reason: str) -> dict[str, Any] | None:
         if self.settings.preemptive_action_mode not in {"simulate", "enforce"}:
             return None
@@ -759,6 +1019,10 @@ class MainAgent:
             return None
         action = await self.graph_db.quarantine_source(source, reason)
         self.quarantined_sources.add(source)
+        await self.event_bus.publish(
+            "action.executed",
+            {**action, "mode": self.settings.preemptive_action_mode},
+        )
         return action
 
     def _release_session_controls(self, session_id: str) -> None:

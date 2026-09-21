@@ -53,6 +53,7 @@ class AppSettings(BaseSettings):
     honeypot_read_timeout_seconds: float = 45.0
     honeypot_write_prompt: str = "maze@corp-gateway:~$ "
     honeypot_ssh_banner: str = "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6"
+    honeypot_ssh_password: str = "honeypot"
     session_memory_window: int = 12
 
     dashscope_api_key: str = ""

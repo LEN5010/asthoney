@@ -2,12 +2,26 @@ services:
   neo4j:
     image: neo4j:5.23
     ports:
-      - "7474:7474"
-      - "7687:7687"
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
     environment:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-please_change_me}
     volumes:
       - neo4j_data:/data
+
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:2222:2222"
+      - "127.0.0.1:2323:2323"
+    env_file:
+      - .env
+    environment:
+      - NEO4J_URI=bolt://neo4j:7687
+    depends_on:
+      - neo4j
+    restart: on-failure
 
 volumes:
   neo4j_data:

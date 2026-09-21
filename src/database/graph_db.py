@@ -45,6 +45,7 @@ class GraphDB:
             "CREATE CONSTRAINT identity_id_unique IF NOT EXISTS FOR (i:Identity) REQUIRE i.identity_id IS UNIQUE",
             "CREATE CONSTRAINT alert_id_unique IF NOT EXISTS FOR (a:Alert) REQUIRE a.alert_id IS UNIQUE",
             "CREATE CONSTRAINT action_id_unique IF NOT EXISTS FOR (a:Action) REQUIRE a.action_id IS UNIQUE",
+            "CREATE CONSTRAINT decision_id_unique IF NOT EXISTS FOR (d:Decision) REQUIRE d.decision_id IS UNIQUE",
             "CREATE INDEX asset_ip_index IF NOT EXISTS FOR (a:Asset) ON (a.ip_address)",
         ]
         async with self._driver.session(database=self.settings.neo4j_database) as session:
@@ -294,10 +295,11 @@ class GraphDB:
         )
         lure = self._derive_lure(intent)
         existing_metadata = dict((existing_asset or {}).get("metadata", {}))
+        jit_synthesized = bool(existing_metadata.get("jit_synthesized", existing_asset is None))
         synthesis_metadata = {
             **existing_metadata,
             "lure": existing_metadata.get("lure", lure),
-            "jit_synthesized": True,
+            "jit_synthesized": jit_synthesized,
             "synthesized_by": "main_agent",
             "source_asset_id": source_asset_id,
             "session_id": session_id,
@@ -667,6 +669,148 @@ class GraphDB:
         records = await self._run_many(query, {"session_id": session_id})
         return [self._normalize_graph_value(item["intent"]) for item in records]
 
+    async def all_intents(self, limit: int = 500) -> list[dict[str, Any]]:
+        """全局意图流，用于 ATT&CK 矩阵与画像聚合。"""
+        query = """
+        MATCH (s:Session)-[:EMITTED]->(i:Intent)-[:AGAINST]->(a:Asset)
+        RETURN {
+            intent_id: i.intent_id,
+            session_id: s.session_id,
+            category: i.category,
+            confidence: i.confidence,
+            summary: i.summary,
+            raw_input: i.raw_input,
+            created_at: i.created_at,
+            asset_id: a.asset_id,
+            hostname: a.hostname
+        } AS intent
+        ORDER BY i.created_at DESC
+        LIMIT $limit
+        """
+        records = await self._run_many(query, {"limit": limit})
+        return [self._normalize_graph_value(item["intent"]) for item in records]
+
+    async def activity_timeline(self, limit: int = 120) -> list[dict[str, Any]]:
+        """把意图、告警、动作合并为一条按时间倒序的全局攻击链时间线。"""
+        query = """
+        CALL {
+            MATCH (s:Session)-[:EMITTED]->(i:Intent)-[:AGAINST]->(a:Asset)
+            RETURN {
+                kind: 'intent',
+                ref_id: i.intent_id,
+                session_id: s.session_id,
+                source_ip: null,
+                category: i.category,
+                severity: null,
+                title: i.category,
+                detail: i.summary,
+                raw_input: i.raw_input,
+                hostname: a.hostname,
+                created_at: i.created_at
+            } AS item
+            ORDER BY i.created_at DESC
+            LIMIT $limit
+        UNION ALL
+            MATCH (id:Identity)-[:TRIGGERED]->(al:Alert)
+            RETURN {
+                kind: 'alert',
+                ref_id: al.alert_id,
+                session_id: null,
+                source_ip: id.identity_id,
+                category: null,
+                severity: al.severity,
+                title: al.alert_type,
+                detail: al.details_json,
+                raw_input: null,
+                hostname: null,
+                created_at: al.created_at
+            } AS item
+            ORDER BY al.created_at DESC
+            LIMIT $limit
+        UNION ALL
+            MATCH (ac:Action)-[:CONTAINS]->(id:Identity)
+            RETURN {
+                kind: 'action',
+                ref_id: ac.action_id,
+                session_id: null,
+                source_ip: id.identity_id,
+                category: null,
+                severity: null,
+                title: ac.kind,
+                detail: ac.reason,
+                raw_input: null,
+                hostname: null,
+                created_at: ac.created_at
+            } AS item
+            ORDER BY ac.created_at DESC
+            LIMIT $limit
+        }
+        RETURN item
+        ORDER BY item.created_at DESC
+        LIMIT $limit
+        """
+        records = await self._run_many(query, {"limit": limit})
+        items = [self._normalize_graph_value(record["item"]) for record in records]
+        # alert 的 detail 是 JSON 字符串，解析成对象方便前端直接用。
+        for item in items:
+            if item.get("kind") == "alert" and isinstance(item.get("detail"), str):
+                try:
+                    item["detail"] = json.loads(item["detail"])
+                except (json.JSONDecodeError, TypeError):
+                    item["detail"] = {}
+        return items
+
+    async def record_decision(
+        self,
+        *,
+        session_id: str,
+        asset_id: str,
+        raw_input: str,
+        strategy: str,
+        steps: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        decision_id = str(uuid4())
+        query = """
+        MATCH (s:Session {session_id: $session_id})
+        CREATE (d:Decision {
+            decision_id: $decision_id,
+            raw_input: $raw_input,
+            asset_id: $asset_id,
+            strategy: $strategy,
+            steps_json: $steps_json,
+            created_at: datetime()
+        })
+        MERGE (s)-[:DECIDED]->(d)
+        RETURN d {
+            .*,
+            steps: d.steps_json
+        } AS decision
+        """
+        record = await self._run_single(
+            query,
+            {
+                "session_id": session_id,
+                "decision_id": decision_id,
+                "raw_input": raw_input[:500],
+                "asset_id": asset_id,
+                "strategy": strategy,
+                "steps_json": json.dumps(steps, ensure_ascii=False),
+            },
+        )
+        return self._hydrate_decision(record["decision"])
+
+    async def session_decisions(self, session_id: str) -> list[dict[str, Any]]:
+        query = """
+        MATCH (s:Session {session_id: $session_id})-[:DECIDED]->(d:Decision)
+        RETURN d {
+            .*,
+            steps: d.steps_json
+        } AS decision
+        ORDER BY d.created_at ASC
+        """
+        records = await self._run_many(query, {"session_id": session_id})
+        return [self._hydrate_decision(item["decision"]) for item in records]
+
     async def quarantine_source(self, source: str, reason: str) -> dict[str, Any]:
         action_id = str(uuid4())
         query = """
@@ -704,6 +848,7 @@ class GraphDB:
             "sessions": 0,
             "events": 0,
             "intents": 0,
+            "decisions": 0,
             "alerts": 0,
             "actions": 0,
             "identities": 0,
@@ -715,6 +860,7 @@ class GraphDB:
             "sessions": "MATCH (s:Session) RETURN count(s) AS total",
             "events": "MATCH (e:Event) RETURN count(e) AS total",
             "intents": "MATCH (i:Intent) RETURN count(i) AS total",
+            "decisions": "MATCH (d:Decision) RETURN count(d) AS total",
             "alerts": "MATCH (a:Alert) RETURN count(a) AS total",
             "actions": "MATCH (a:Action) RETURN count(a) AS total",
             "identities": "MATCH (i:Identity) RETURN count(i) AS total",
@@ -729,6 +875,7 @@ class GraphDB:
             "MATCH ()-[r:CAN_REACH]->() WHERE r.metadata_json CONTAINS '\"jit_synthesized\": true' DELETE r",
             "MATCH (s:Session) DETACH DELETE s",
             "MATCH (e:Event) DETACH DELETE e",
+            "MATCH (d:Decision) DETACH DELETE d",
             "MATCH (i:Intent) DETACH DELETE i",
             "MATCH (a:Alert) DETACH DELETE a",
             "MATCH (a:Action) DETACH DELETE a",
@@ -862,6 +1009,13 @@ class GraphDB:
         metadata = hydrated.get("metadata")
         if isinstance(metadata, str):
             hydrated["metadata"] = json.loads(metadata or "{}")
+        return hydrated
+
+    def _hydrate_decision(self, decision: dict[str, Any]) -> dict[str, Any]:
+        hydrated = self._normalize_graph_value(dict(decision))
+        steps = hydrated.get("steps")
+        if isinstance(steps, str):
+            hydrated["steps"] = json.loads(steps or "[]")
         return hydrated
 
     def _hydrate_alert(self, alert: dict[str, Any]) -> dict[str, Any]:

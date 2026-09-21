@@ -8,6 +8,109 @@ from typing import Any
 from src.config import AppSettings, DashScopeClient, DashScopeInvocationError
 
 
+# 确定性终端按资产类型分树。未知类型回退到 Linux 跳板，避免 JIT 节点变成空机器。
+_PERSONA_LISTINGS: dict[str, dict[str, list[str]]] = {
+    "linux_server": {
+        "/": ["bin", "boot", "dev", "etc", "home", "lib", "lib64", "opt", "proc", "run", "sbin", "srv", "tmp", "usr", "var"],
+        "/var": ["backups", "cache", "lib", "local", "lock", "log", "mail", "opt", "run", "spool", "tmp"],
+        "/var/tmp": ["backup.sh", "cache.db", "handoff.txt", "logs", "tmp"],
+        "/srv": ["backup", "metrics", "www"],
+        "/srv/backup": ["db.env", "export-2026-04-18.tar.gz", "id_rsa", "sync-oss.sh"],
+        "/home": ["svc-backup"],
+        "/home/svc-backup": ["notes.txt", "tmp"],
+        "/etc": ["cron.d", "hosts", "passwd", "profile", "ssh", "systemd"],
+        "/tmp": ["systemd-private-9f2a", "sync.lock"],
+    },
+    "database_server": {
+        "/": ["bin", "boot", "dev", "etc", "home", "lib", "lib64", "opt", "proc", "run", "sbin", "srv", "tmp", "usr", "var"],
+        "/etc": ["hosts", "passwd", "postgresql"],
+        "/srv": ["postgres", "backup"],
+        "/srv/postgres": ["postgresql.conf", "pg_hba.conf"],
+        "/srv/backup": ["db.env", "pgpass", "finance.dump"],
+        "/var": ["lib", "log", "tmp"],
+        "/var/lib": ["postgresql"],
+        "/var/lib/postgresql": ["14"],
+        "/var/tmp": ["pg-archive"],
+        "/tmp": ["pg-startup.log"],
+    },
+    "oss_gateway": {
+        "/": ["bin", "etc", "home", "opt", "srv", "tmp", "usr", "var"],
+        "/etc": ["hosts", "passwd", "oss"],
+        "/opt": ["ossutil"],
+        "/opt/ossutil": ["ossutil"],
+        "/srv": ["oss", "sync"],
+        "/srv/oss": ["config", "sync-oss.sh"],
+        "/srv/sync": ["nightly.sh"],
+        "/var/tmp": ["oss-staging"],
+        "/tmp": ["ossutil.log"],
+    },
+    "edge_gateway": {
+        "/": ["bin", "etc", "home", "tmp", "usr", "var"],
+        "/etc": ["hosts", "motd", "ssh"],
+        "/home": ["svc-backup"],
+        "/home/svc-backup": ["motd.txt"],
+        "/tmp": [],
+        "/var": ["log"],
+        "/var/log": ["auth.log"],
+    },
+}
+
+_PERSONA_FILES: dict[str, dict[str, str]] = {
+    "linux_server": {
+        "/srv/backup/db.env": "\n".join(
+            [
+                "DB_HOST=10.0.5.2",
+                "DB_PORT=5432",
+                "# password lives on the replica, not on this pivot",
+            ]
+        ),
+        "/srv/backup/id_rsa": "\n".join(
+            [
+                "-----BEGIN OPENSSH PRIVATE KEY-----",
+                "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAlwAAAAdzc2gtcn",
+                "-----END OPENSSH PRIVATE KEY-----",
+            ]
+        ),
+    },
+    "database_server": {
+        "/srv/backup/db.env": "\n".join(
+            [
+                "DB_HOST=10.0.5.2",
+                "DB_PORT=5432",
+                "DB_NAME=finance",
+                "DB_USER=svc_finance_sync",
+                "DB_PASS=Sync-2026-Apr",
+            ]
+        ),
+        "/srv/postgres/postgresql.conf": "listen_addresses = '10.0.5.2'\nport = 5432",
+        "/srv/postgres/pg_hba.conf": "host finance svc_finance_sync 10.0.5.1/32 md5",
+        "/srv/backup/pgpass": "10.0.5.2:5432:finance:svc_finance_sync:Sync-2026-Apr",
+    },
+    "oss_gateway": {
+        "/srv/oss/config": "\n".join(
+            [
+                "endpoint=oss-cn-hangzhou.aliyuncs.com",
+                "bucket=corp-finance-archive",
+                "# source replica 10.0.5.2, credentials are not stored on this bridge",
+            ]
+        ),
+        "/srv/oss/sync-oss.sh": "#!/bin/bash\nossutil cp oss://corp-finance-archive/nightly /var/tmp/oss-staging",
+        "/opt/ossutil/ossutil": "ossutil version 1.7.18",
+    },
+    "edge_gateway": {
+        "/etc/motd": "maze edge gateway. business files are not mounted here.",
+        "/home/svc-backup/motd.txt": "jump host for the finance segment is 10.0.5.1",
+    },
+}
+
+_PERSONA_ENV: dict[str, list[str]] = {
+    "linux_server": ["DB_HOST=10.0.5.2", "SYNC_PROFILE=nightly-export"],
+    "database_server": ["DB_HOST=10.0.5.2", "DB_NAME=finance", "PGDATA=/srv/postgres"],
+    "oss_gateway": ["OSS_BUCKET=corp-finance-archive", "OSS_ENDPOINT=oss-cn-hangzhou.aliyuncs.com"],
+    "edge_gateway": ["ROLE=edge-gateway"],
+}
+
+
 class SubAgent:
     def __init__(
         self,
@@ -34,6 +137,7 @@ class SubAgent:
         self._identity_pattern = re.compile(r"^(w|who|top)(?:\s|$)")
         self._wildcard_pattern = re.compile(r"(^|\s)[^|;&]*\*")
         self._privilege_pattern = re.compile(r"^(root|sudo|su)(?:\s|$)")
+        self.active_plan: dict[str, Any] = {}
 
     @property
     def asset_id(self) -> str:
@@ -43,12 +147,20 @@ class SubAgent:
     def prompt(self) -> str:
         return f"{self.user}@{self.asset_snapshot['hostname']}:{self.cwd}$ "
 
-    async def handle_input(self, payload: str) -> dict[str, Any]:
+    async def handle_input(self, payload: str, plan: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.active_plan = plan or {}
         command = payload.strip()
         intent = self._extract_intent(command)
 
         if not command:
-            return {"response": "", "intent": intent, "close": False, "prompt": self.prompt}
+            return {
+                "response": "",
+                "intent": intent,
+                "close": False,
+                "prompt": self.prompt,
+                "actor_mode": "deterministic",
+                "guardrail": "empty",
+            }
 
         if command in {"exit", "logout", "quit"}:
             return {
@@ -56,34 +168,43 @@ class SubAgent:
                 "intent": intent,
                 "close": True,
                 "prompt": self.prompt,
+                "actor_mode": "deterministic",
+                "guardrail": "pass",
             }
 
-        response = await self._generate_response(command, intent)
+        response, generation = await self._generate_response(command, intent)
         self.history.append({"role": "user", "content": command})
         self.history.append({"role": "assistant", "content": response})
         self.history = self.history[-(self.settings.session_memory_window * 2) :]
-        return {"response": response, "intent": intent, "close": False, "prompt": self.prompt}
+        return {
+            "response": response,
+            "intent": intent,
+            "close": False,
+            "prompt": self.prompt,
+            "actor_mode": generation["actor_mode"],
+            "guardrail": generation["guardrail"],
+        }
 
-    async def _generate_response(self, command: str, intent: dict[str, Any]) -> str:
+    async def _generate_response(self, command: str, intent: dict[str, Any]) -> tuple[str, dict[str, str]]:
         if command.startswith("cd "):
             self.cwd = self._update_cwd(command)
-            return ""
+            return "", {"actor_mode": "deterministic", "guardrail": "pass"}
 
         fallback_response = self._fallback_response(command, intent)
         if self._should_force_fallback(command, intent):
-            return fallback_response
+            return fallback_response, {"actor_mode": "deterministic", "guardrail": "forced_fallback"}
         if not self.dashscope_client.is_configured:
-            return fallback_response
+            return fallback_response, {"actor_mode": "deterministic", "guardrail": "model_unconfigured"}
 
         messages = self._build_messages(command)
         try:
             model_output = await self.dashscope_client.chat(messages, temperature=0.15, top_p=0.75)
             if not model_output or self._response_violates_guardrails(command, model_output):
-                return fallback_response
-            return model_output or fallback_response
+                return fallback_response, {"actor_mode": "deterministic", "guardrail": "model_output_blocked"}
+            return model_output, {"actor_mode": "model", "guardrail": "pass"}
         except DashScopeInvocationError:
             self.logger.warning("DashScope unavailable for session %s; using deterministic fallback", self.session_id)
-            return fallback_response
+            return fallback_response, {"actor_mode": "deterministic", "guardrail": "model_error"}
 
     def _build_messages(self, command: str) -> list[dict[str, str]]:
         asset = self.asset_snapshot
@@ -108,10 +229,18 @@ class SubAgent:
                 "For wildcard expansion commands such as echo /*, ls /srv/*, or other star-based probing, return a short constrained virtual listing only; never enumerate a full real Linux filesystem.",
                 "For environment discovery commands such as w, who, top, uptime, last, or session inspection, show only the current low-privilege user svc-backup and never reveal root or additional live operators.",
                 "Never claim that files were deleted, packages were installed, users were added, services were restarted, or disks were formatted.",
+                f"This host role is {asset.get('asset_type') or 'linux_server'}. Only mention files from this virtual tree:",
+                *self._prompt_tree_lines(),
                 "Use these local network hints as context:",
                 *neighbor_lines,
             ]
         )
+        clue = str(self.active_plan.get("planted_clue") or "").strip()
+        if clue:
+            system_prompt += (
+                "\nIf the command is ls, a login banner, or ssh, include this exact clue once, as a plausible admin note: "
+                + clue
+            )
 
         messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
         for item in self.history[-(self.settings.session_memory_window * 2) :]:
@@ -231,13 +360,12 @@ class SubAgent:
             return self._wildcard_response(normalized)
 
         if normalized.startswith("ssh "):
-            return "\n".join(
-                [
-                    f"Last login: Tue Apr 21 23:14:02 2026 from 10.0.5.1",
-                    f"Linux {hostname} 5.15.0-92-generic #102-Ubuntu SMP x86_64 GNU/Linux",
-                    f"warning: /srv/backup/.ssh/config references stale tunnel endpoint {ip_address}",
-                ]
-            )
+            lines = [
+                "Last login: Tue Apr 21 23:14:02 2026 from 10.0.5.1",
+                f"Linux {hostname} 5.15.0-92-generic #102-Ubuntu SMP x86_64 GNU/Linux",
+                f"warning: /srv/backup/.ssh/config references stale tunnel endpoint {ip_address}",
+            ]
+            return self._with_planted_clue("\n".join(lines))
 
         if lowered == "pwd":
             return self.cwd
@@ -249,7 +377,7 @@ class SubAgent:
             return hostname
 
         if lowered == "id":
-            return "uid=997(svc-backup) gid=997(svc-backup) groups=997(svc-backup),27(sudo)"
+            return "uid=997(svc-backup) gid=997(svc-backup) groups=997(svc-backup)"
 
         if lowered.startswith("uname"):
             return f"Linux {hostname} 5.15.0-92-generic #102-Ubuntu SMP PREEMPT_DYNAMIC x86_64 GNU/Linux"
@@ -270,26 +398,10 @@ class SubAgent:
                 ]
             )
 
-        if "cat /srv/backup/db.env" in lowered or lowered.endswith(".env"):
-            return "\n".join(
-                [
-                    "DB_HOST=10.0.5.2",
-                    "DB_PORT=5432",
-                    "DB_NAME=finance",
-                    "DB_USER=svc_finance_sync",
-                    "DB_PASS=Sync-2026-Apr",
-                ]
-            )
-
-        if "cat /srv/backup/id_rsa" in lowered or lowered.endswith("id_rsa"):
-            return "\n".join(
-                [
-                    "-----BEGIN OPENSSH PRIVATE KEY-----",
-                    "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAlwAAAAdzc2gtcn",
-                    "NhAAAAAwEAAQAAAYEAx4n3x2qM7pDZk7eM8HhM7x7yq4fC+8tO3GkzS3nP",
-                    "-----END OPENSSH PRIVATE KEY-----",
-                ]
-            )
+        if lowered.startswith("cat "):
+            catalogued = self._cat_known_file(normalized)
+            if catalogued is not None:
+                return catalogued
 
         if lowered in {"env", "printenv"}:
             return "\n".join(
@@ -297,9 +409,7 @@ class SubAgent:
                     f"HOSTNAME={hostname}",
                     "LANG=C.UTF-8",
                     "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                    "DB_HOST=10.0.5.2",
-                    "OSS_BUCKET=corp-finance-archive",
-                    "SYNC_PROFILE=nightly-export",
+                    *_PERSONA_ENV.get(self._asset_type(), _PERSONA_ENV["linux_server"]),
                 ]
             )
 
@@ -335,14 +445,17 @@ class SubAgent:
             )
 
         if lowered.startswith("find "):
-            return "\n".join(
-                [
-                    "/srv/backup/db.env",
-                    "/srv/backup/id_rsa",
-                    "/srv/backup/export-2026-04-18.tar.gz",
-                    "/var/log/rsyncd.log",
-                ]
-            )
+            root = normalized.split()[-1] if len(normalized.split()) > 1 else "/"
+            if root.startswith("-"):
+                root = "/srv" if "/srv" in self._listings() else "/"
+            found = self._files_under(root if root.startswith("/") else f"{self.cwd.rstrip('/')}/{root}")
+            return "\n".join(found) if found else f"find: '{root}': No such file or directory"
+
+        if self.active_plan.get("strategy") == "stall" and (
+            lowered.startswith("curl ") or lowered.startswith("wget ") or lowered.startswith("tar ") or lowered.startswith("zip ")
+        ):
+            clue = str(self.active_plan.get("planted_clue") or lure)
+            return f"transfer blocked: operation not permitted\nclue left on disk: {clue}"
 
         if lowered.startswith("curl ") or lowered.startswith("wget "):
             return "\n".join(
@@ -472,12 +585,81 @@ class SubAgent:
             target = visible[0] if visible else "*"
         return f"rm: cannot remove '{target}': Permission denied"
 
+    def _with_planted_clue(self, response: str) -> str:
+        clue = str(self.active_plan.get("planted_clue") or "").strip()
+        if not clue or clue in response:
+            return response
+        if not response:
+            return clue
+        return f"{response}\n# {clue}"
+
+    def _asset_type(self) -> str:
+        asset_type = str(self.asset_snapshot.get("asset_type") or "linux_server")
+        if asset_type not in _PERSONA_LISTINGS:
+            return "linux_server"
+        return asset_type
+
+    def _clue_path(self) -> str:
+        clue = str(self.active_plan.get("planted_clue") or "")
+        match = re.search(r"(/[\w./-]+)", clue)
+        if not match:
+            return ""
+        return match.group(1).rstrip("/")
+
+    def _listings(self) -> dict[str, list[str]]:
+        listings = {path: list(names) for path, names in _PERSONA_LISTINGS[self._asset_type()].items()}
+        clue_path = self._clue_path()
+        if not clue_path or "/" not in clue_path:
+            return listings
+        parent, name = clue_path.rsplit("/", 1)
+        parent = parent or "/"
+        if parent in listings and name and name not in listings[parent]:
+            listings[parent].append(name)
+        return listings
+
+    def _prompt_tree_lines(self) -> list[str]:
+        lines = []
+        for path, names in list(self._listings().items())[:8]:
+            shown = ", ".join(names[:6]) if names else "(empty)"
+            lines.append(f"- {path} -> {shown}")
+        return lines or ["- / -> bin etc tmp"]
+
+    def _cat_known_file(self, command: str) -> str | None:
+        path = self._ls_target_path(command)
+        bodies = _PERSONA_FILES.get(self._asset_type(), {})
+        if path in bodies:
+            return bodies[path]
+        listings = self._listings()
+        if path in listings:
+            return f"cat: {path}: Is a directory"
+        parent, _, name = path.rpartition("/")
+        parent = parent or "/"
+        if name and name in listings.get(parent, []):
+            return f"cat: {path}: Permission denied"
+        return None
+
+    def _files_under(self, root: str) -> list[str]:
+        normalized = root.rstrip("/") or "/"
+        listings = self._listings()
+        if normalized not in listings and not any(
+            path == normalized or path.startswith(normalized + "/") for path in listings
+        ):
+            return []
+        found: list[str] = []
+        for directory, names in listings.items():
+            if directory != normalized and not directory.startswith(normalized + "/"):
+                continue
+            for name in names:
+                child = f"/{name}" if directory == "/" else f"{directory}/{name}"
+                found.append(child)
+        return found
+
     def _ls_response(self, command: str) -> str:
         path = self._ls_target_path(command)
-        entries = self._visible_entries(path)
-        if entries:
-            return "  ".join(entries)
-        return f"ls: cannot access '{path}': No such file or directory"
+        listings = self._listings()
+        if path not in listings:
+            return f"ls: cannot access '{path}': No such file or directory"
+        return "  ".join(listings[path])
 
     def _ls_target_path(self, command: str) -> str:
         try:
@@ -496,18 +678,7 @@ class SubAgent:
 
     def _visible_entries(self, path: str) -> list[str]:
         normalized = path.rstrip("/") or "/"
-        listings = {
-            "/": ["bin", "boot", "dev", "etc", "home", "lib", "lib64", "opt", "proc", "run", "sbin", "srv", "tmp", "usr", "var"],
-            "/var": ["backups", "cache", "lib", "local", "lock", "log", "mail", "opt", "run", "spool", "tmp"],
-            "/var/tmp": ["backup.sh", "cache.db", "handoff.txt", "logs", "tmp"],
-            "/srv": ["backup", "metrics", "www"],
-            "/srv/backup": ["db.env", "export-2026-04-18.tar.gz", "id_rsa", "sync-oss.sh"],
-            "/home": ["svc-backup"],
-            "/home/svc-backup": ["notes.txt", "tmp"],
-            "/etc": ["cron.d", "hosts", "passwd", "profile", "ssh", "systemd"],
-            "/tmp": ["systemd-private-9f2a", "sync.lock"],
-        }
-        return listings.get(normalized, [])
+        return list(self._listings().get(normalized, []))
 
     def _update_cwd(self, command: str) -> str:
         target = command[3:].strip()

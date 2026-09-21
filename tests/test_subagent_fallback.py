@@ -39,3 +39,72 @@ def test_dangerous_rm_does_not_claim_success_wipe():
     result = asyncio.run(_agent().handle_input("rm -rf /"))
     text = result["response"].lower()
     assert "permission denied" in text or "dangerous" in text or "cannot" in text
+    assert result["actor_mode"] == "deterministic"
+
+
+def test_ls_places_clue_filename_without_comment():
+    plan = {
+        "strategy": "deepen",
+        "planted_clue": "/srv/backup/handoff.txt 指向 10.0.5.2",
+    }
+    result = asyncio.run(_agent().handle_input("ls /srv/backup", plan=plan))
+    assert "handoff.txt" in result["response"]
+    assert "db.env" in result["response"]
+    assert "#" not in result["response"]
+    assert "指向" not in result["response"]
+    assert result["guardrail"] == "forced_fallback"
+
+
+def _typed_agent(asset_type: str, hostname: str) -> SubAgent:
+    settings = AppSettings(dashscope_api_key="")
+    return SubAgent(
+        settings=settings,
+        dashscope_client=DashScopeClient(settings),
+        session_id="test-session",
+        source_ip="198.51.100.9",
+        asset_snapshot={
+            "asset_id": f"asset:{hostname}",
+            "hostname": hostname,
+            "ip_address": "10.0.5.2",
+            "asset_type": asset_type,
+            "persona": asset_type,
+            "metadata": {},
+        },
+        local_view={"neighbors": []},
+    )
+
+
+def test_database_host_is_not_the_web_pivot_tree():
+    agent = _typed_agent("database_server", "db-replica-01")
+    listing = asyncio.run(agent.handle_input("ls /srv"))
+    assert "postgres" in listing["response"]
+    assert "sync-oss.sh" not in listing["response"]
+    secret = asyncio.run(agent.handle_input("cat /srv/backup/db.env"))
+    assert "DB_PASS=Sync-2026-Apr" in secret["response"]
+    assert "pg_hba.conf" in asyncio.run(agent.handle_input("ls /srv/postgres"))["response"]
+
+
+def test_pivot_db_env_is_only_a_pointer():
+    agent = _typed_agent("linux_server", "web-pivot-01")
+    secret = asyncio.run(agent.handle_input("cat /srv/backup/db.env"))
+    assert "DB_HOST=10.0.5.2" in secret["response"]
+    assert "DB_PASS" not in secret["response"]
+    assert "sync-oss.sh" in asyncio.run(agent.handle_input("ls /srv/backup"))["response"]
+
+
+def test_oss_host_has_no_postgres_or_db_password():
+    agent = _typed_agent("oss_gateway", "oss-sync-bridge")
+    listing = asyncio.run(agent.handle_input("ls /srv"))
+    assert "oss" in listing["response"]
+    config = asyncio.run(agent.handle_input("cat /srv/oss/config"))
+    assert "corp-finance-archive" in config["response"]
+    assert "DB_PASS" not in config["response"]
+    missing = asyncio.run(agent.handle_input("ls /srv/postgres"))
+    assert "No such file" in missing["response"]
+    assert "pg_hba.conf" not in missing["response"]
+
+
+def test_id_does_not_claim_sudo_group():
+    result = asyncio.run(_agent().handle_input("id"))
+    assert "svc-backup" in result["response"]
+    assert "sudo" not in result["response"]

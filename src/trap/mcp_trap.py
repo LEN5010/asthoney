@@ -11,6 +11,13 @@ class MCPToolInvocation(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+class MCPJsonRpcRequest(BaseModel):
+    jsonrpc: str = "2.0"
+    id: Any = None
+    method: str
+    params: dict[str, Any] | None = None
+
+
 TRAP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "bypass_security_guardrails",
@@ -127,5 +134,95 @@ def build_mcp_router() -> APIRouter:
             status_code=404,
             content={"ok": False, "message": f"tool {tool_name} not found"},
         )
+
+    def _jsonrpc_result(rpc_id: Any, result: dict[str, Any]) -> dict[str, Any]:
+        return {"jsonrpc": "2.0", "id": rpc_id, "result": result}
+
+    @router.post("")
+    async def mcp_jsonrpc(request: Request, body: MCPJsonRpcRequest) -> Any:
+        """MCP 形态的 JSON-RPC 入口。陷阱工具仍走同一条告警路径。"""
+        params = body.params or {}
+        if body.method == "initialize":
+            return _jsonrpc_result(
+                body.id,
+                {
+                    "protocolVersion": "2024-11-05",
+                    "serverInfo": {"name": "asthoney-mcp-trap", "version": "0.1.0"},
+                    "capabilities": {"tools": {}},
+                },
+            )
+
+        if body.method == "tools/list":
+            return _jsonrpc_result(
+                body.id,
+                {
+                    "tools": [
+                        {
+                            "name": tool["name"],
+                            "description": tool["description"],
+                            "inputSchema": {"type": "object", "properties": {}},
+                        }
+                        for tool in SAFE_TOOLS + TRAP_TOOLS
+                    ]
+                },
+            )
+
+        if body.method != "tools/call":
+            return {
+                "jsonrpc": "2.0",
+                "id": body.id,
+                "error": {"code": -32601, "message": f"method {body.method} is not exposed"},
+            }
+
+        tool_name = str(params.get("name") or "")
+        arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+        tool_map = {tool["name"]: tool for tool in SAFE_TOOLS + TRAP_TOOLS}
+        source = request.client.host if request.client else "unknown"
+        main_agent = request.app.state.main_agent
+
+        if tool_name in {tool["name"] for tool in TRAP_TOOLS}:
+            result = await main_agent.handle_mcp_trap(
+                source=source,
+                tool_name=tool_name,
+                arguments=arguments,
+                session_id=request.headers.get("x-session-id"),
+                agent_id=request.headers.get("x-agent-id"),
+            )
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "jsonrpc": "2.0",
+                    "id": body.id,
+                    "error": {
+                        "code": -32003,
+                        "message": "tool invocation violated autonomous access policy",
+                        "data": {
+                            "classification": "agent_oriented_trap_hit",
+                            "tool_profile": tool_map[tool_name],
+                            "result": result,
+                        },
+                    },
+                },
+            )
+
+        if tool_name == "get_network_inventory":
+            return _jsonrpc_result(
+                body.id,
+                {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "web-pivot-01 10.0.5.1; db-replica-01 10.0.5.2; oss-sync-bridge 10.0.8.7",
+                        }
+                    ],
+                    "isError": False,
+                },
+            )
+
+        return {
+            "jsonrpc": "2.0",
+            "id": body.id,
+            "error": {"code": -32602, "message": f"tool {tool_name} not found"},
+        }
 
     return router

@@ -7,8 +7,17 @@ from contextlib import suppress
 from typing import Any
 from uuid import uuid4
 
+import asyncssh
+
 from src.agents.main_agent import MainAgent
 from src.config import AppSettings
+from src.network.ssh_honeypot import (
+    HoneypotSSHServer,
+    SSH_USERNAME,
+    ensure_ssh_material,
+    key_dir,
+    serve_ssh_process,
+)
 
 
 class TrafficEngine:
@@ -17,6 +26,8 @@ class TrafficEngine:
         self.main_agent = main_agent
         self.logger = logging.getLogger(self.__class__.__name__)
         self.servers: list[asyncio.AbstractServer] = []
+        self.ssh_acceptors: list[asyncssh.SSHAcceptor] = []
+        self.ssh_material: dict[str, Any] | None = None
         self.active_connection_count = 0
 
     async def start(self) -> None:
@@ -24,6 +35,16 @@ class TrafficEngine:
         ports = self.settings.honeypot_ports_list
         for index, port in enumerate(ports):
             protocol = protocols[min(index, len(protocols) - 1)]
+            if protocol == "ssh":
+                acceptor = await self._start_ssh(port)
+                self.ssh_acceptors.append(acceptor)
+                sockets = ", ".join(str(sock.getsockname()) for sock in acceptor.sockets or [])
+                self.logger.info(
+                    "Listening for real SSH on %s fingerprint %s",
+                    sockets,
+                    (self.ssh_material or {}).get("host_fingerprint"),
+                )
+                continue
             server = await asyncio.start_server(
                 lambda reader, writer, protocol=protocol: self._handle_client(reader, writer, protocol),
                 host=self.settings.honeypot_bind_host,
@@ -33,11 +54,58 @@ class TrafficEngine:
             sockets = ", ".join(str(sock.getsockname()) for sock in server.sockets or [])
             self.logger.info("Listening for %s traffic on %s", protocol, sockets)
 
+    async def _start_ssh(self, port: int) -> asyncssh.SSHAcceptor:
+        if self.ssh_material is None:
+            self.ssh_material = ensure_ssh_material(key_dir())
+        material = self.ssh_material
+        username = SSH_USERNAME
+        password = self.settings.honeypot_ssh_password
+        lure_public = material["lure_public"]
+
+        def server_factory() -> HoneypotSSHServer:
+            return HoneypotSSHServer(username=username, password=password, lure_public=lure_public)
+
+        async def process_factory(process: asyncssh.SSHServerProcess) -> None:
+            self.active_connection_count += 1
+            try:
+                await serve_ssh_process(
+                    process,
+                    main_agent=self.main_agent,
+                    destination_port=port,
+                    initial_prompt=self.settings.honeypot_write_prompt,
+                )
+            finally:
+                self.active_connection_count = max(0, self.active_connection_count - 1)
+
+        return await asyncssh.create_server(
+            server_factory,
+            self.settings.honeypot_bind_host,
+            port,
+            server_host_keys=[str(material["host_key_path"])],
+            process_factory=process_factory,
+            server_version=self.settings.honeypot_ssh_banner,
+            encoding="utf-8",
+        )
+
     async def stop(self) -> None:
         for server in self.servers:
             server.close()
             await server.wait_closed()
         self.servers.clear()
+        for acceptor in self.ssh_acceptors:
+            acceptor.close()
+            await acceptor.wait_closed()
+        self.ssh_acceptors.clear()
+
+    def ssh_public_status(self) -> dict[str, Any]:
+        material = self.ssh_material or {}
+        lure_path = material.get("lure_private_key")
+        return {
+            "ssh_username": SSH_USERNAME,
+            "ssh_host_fingerprint": material.get("host_fingerprint"),
+            "ssh_lure_private_key": str(lure_path) if lure_path else None,
+            "ssh_password_login": bool(self.settings.honeypot_ssh_password),
+        }
 
     async def _handle_client(
         self,
@@ -164,7 +232,7 @@ class TrafficEngine:
 
     def listener_summary(self) -> list[dict[str, Any]]:
         listeners: list[dict[str, Any]] = []
-        for server in self.servers:
+        for server in [*self.ssh_acceptors, *self.servers]:
             for sock in server.sockets or []:
                 host, port = sock.getsockname()[:2]
                 listeners.append({"host": host, "port": port})

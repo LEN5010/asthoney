@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>攻击矩阵 · ASTHONEY 欺骗蜜网</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="topbar-left">
+        <button class="sidebar-toggle" data-sidebar-toggle>菜单</button>
+        <a class="brand" href="/"><span class="brand-mark"></span>ASTHONEY<span class="brand-sub">生成式欺骗蜜网</span></a>
+      </div>
+      <div class="topbar-right">
+        <span class="topbar-meta" id="lastUpdated">等待同步</span>
+        <span class="health-dot" id="healthDot">检测中</span>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <aside class="sidebar">
+        <div class="sidebar-group">
+          <div class="sidebar-label">导航</div>
+          <nav class="nav-list"></nav>
+        </div>
+        <div class="sidebar-group">
+          <div class="sidebar-label">系统状态</div>
+          <div class="shell-status" id="shellStatus">
+            <div class="shell-status-row"><span>加载中…</span></div>
+          </div>
+        </div>
+      </aside>
+
+      <main class="content">
+        <div class="content-header">
+          <div>
+            <h1 class="content-title">ATT&amp;CK 观测矩阵</h1>
+            <div class="content-subtitle">只覆盖本蜜网实际可观测到的技术子集。每个格子都能回溯到意图分类或 MCP 诱饵命中，不是完整企业矩阵的贴标签。</div>
+          </div>
+          <div class="header-actions">
+            <a class="link-button" href="/profiles/view">攻击者画像</a>
+            <button class="button" id="refreshBtn" type="button">手动刷新</button>
+          </div>
+        </div>
+
+        <section class="kpi-row">
+          <div class="kpi">
+            <div class="kpi-label"><span class="dot" style="background: var(--cat-1);"></span>覆盖战术</div>
+            <p class="kpi-value" id="kpiTactics">0</p>
+            <div class="kpi-sub">共 <strong id="kpiTacticsTotal">8</strong> 列</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label"><span class="dot" style="background: var(--cat-3);"></span>命中技术</div>
+            <p class="kpi-value" id="kpiTechniques">0</p>
+            <div class="kpi-sub">有观测记录的 ATT&amp;CK 技术</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label"><span class="dot" style="background: var(--cat-2);"></span>观测次数</div>
+            <p class="kpi-value" id="kpiHits">0</p>
+            <div class="kpi-sub">意图与告警映射合计</div>
+          </div>
+        </section>
+
+        <section class="panel-grid">
+          <article class="card span-12">
+            <div class="card-header">
+              <h2 class="card-title">战术列</h2>
+              <span class="card-meta" id="matrixMeta">等待数据</span>
+            </div>
+            <div class="card-body">
+              <div class="attack-matrix" id="matrix"></div>
+              <div class="footnote">红色格子表示该技术被观测 3 次及以上；蓝色为 1–2 次。悬停查看原始命令或诱饵工具名。</div>
+            </div>
+          </article>
+
+          <article class="card span-12">
+            <div class="card-header">
+              <h2 class="card-title">证据摘录</h2>
+              <span class="card-meta" id="evidenceMeta">0 条</span>
+            </div>
+            <div class="card-body">
+              <div class="stack" id="evidenceList">
+                <div class="empty-state">注入演示会话后，这里会列出支撑每个技术格子的原始输入。</div>
+              </div>
+            </div>
+          </article>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+  <script>
+    initLayout("attack");
+    initTooltip(document.getElementById("matrix"));
+
+    const matrixEl = document.getElementById("matrix");
+    const matrixMetaEl = document.getElementById("matrixMeta");
+    const evidenceListEl = document.getElementById("evidenceList");
+    const evidenceMetaEl = document.getElementById("evidenceMeta");
+    const lastUpdatedEl = document.getElementById("lastUpdated");
+
+    function renderMatrix(matrix) {
+      const tactics = matrix.tactics || [];
+      document.getElementById("kpiTactics").textContent = String(matrix.tactics_covered ?? 0);
+      document.getElementById("kpiTacticsTotal").textContent = String(matrix.tactics_total ?? tactics.length);
+      document.getElementById("kpiTechniques").textContent = String(matrix.technique_count ?? 0);
+      document.getElementById("kpiHits").textContent = String(matrix.total_observations ?? 0);
+      matrixMetaEl.textContent = `${matrix.tactics_covered ?? 0}/${matrix.tactics_total ?? 0} 战术有观测`;
+
+      matrixEl.innerHTML = tactics.map((tactic) => {
+        const cells = (tactic.techniques || []).length
+          ? tactic.techniques.map((item) => {
+              const hot = item.count >= 3 ? "is-hot" : "is-hit";
+              const evidence = (item.evidence || []).join(" · ");
+              const tipHtml = `<strong>${escapeHtml(item.id)} ${escapeHtml(item.name)}</strong><div class="tip-row"><span class="k">次数</span><span>${item.count}</span></div>${evidence ? `<div class="tip-row"><span class="k">证据</span><span>${escapeHtml(truncate(evidence, 120))}</span></div>` : ""}`;
+              const tip = escapeHtml(tipHtml);
+              return `
+                <div class="technique-cell ${hot}" data-tip="${tip}">
+                  <span class="tid">${escapeHtml(item.id)}</span>
+                  <span class="tname">${escapeHtml(item.name)}</span>
+                  <span class="tcount">${item.count} 次</span>
+                </div>
+              `;
+            }).join("")
+          : '<div class="technique-empty">未观测</div>';
+        return `
+          <div class="tactic-col">
+            <div class="tactic-head">${escapeHtml(tactic.name)}<span class="tid">${escapeHtml(tactic.id)} · ${tactic.total_hits || 0} hits</span></div>
+            ${cells}
+          </div>
+        `;
+      }).join("");
+
+      const evidence = [];
+      tactics.forEach((tactic) => {
+        (tactic.techniques || []).forEach((item) => {
+          (item.evidence || []).forEach((row) => {
+            evidence.push({ tactic: tactic.name, technique: `${item.id} ${item.name}`, text: row, count: item.count });
+          });
+        });
+      });
+      evidenceMetaEl.textContent = `${evidence.length} 条`;
+      if (!evidence.length) {
+        evidenceListEl.innerHTML = '<div class="empty-state">暂无证据。可运行 scripts/demo_smoke.sh 注入一条完整攻击链。</div>';
+        return;
+      }
+      evidenceListEl.innerHTML = evidence.slice(0, 12).map((item) => `
+        <article class="list-item">
+          <div class="list-item-head">
+            <strong>${escapeHtml(item.technique)}</strong>
+            <span class="pill ${item.count >= 3 ? "critical" : "warning"}">${item.count} 次</span>
+          </div>
+          <div class="inline-meta" style="margin-top:4px;">${escapeHtml(item.tactic)} · <span class="mono">${escapeHtml(item.text)}</span></div>
+        </article>
+      `).join("");
+    }
+
+    async function refresh() {
+      try {
+        const payload = await fetchJSON("/attack/matrix");
+        renderMatrix(payload);
+        lastUpdatedEl.textContent = `最近刷新 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`;
+      } catch (error) {
+        lastUpdatedEl.textContent = `刷新失败: ${error.message || error}`;
+      }
+    }
+
+    document.getElementById("refreshBtn").addEventListener("click", refresh);
+    refresh();
+    connectEventStream(debounce(refresh, 280));
+    setInterval(refresh, 8000);
+  </script>
+</body>
+</html>

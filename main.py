@@ -6,15 +6,20 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+import asyncio
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from src.agents.main_agent import MainAgent
+from src.agents.main_agent import NON_HUMAN_INTERVAL_SECONDS, MainAgent
+from src.analytics.attack_matrix import build_matrix
+from src.analytics.threat_profile import build_attacker_profiles
 from src.config import DashScopeClient, configure_logging, get_settings
 from src.database.graph_db import GraphDB
 from src.network.traffic_engine import TrafficEngine
+from src.realtime.event_bus import EventBus
 from src.trap.mcp_trap import build_mcp_router
 
 
@@ -41,10 +46,12 @@ async def lifespan(app: FastAPI):
     await graph_db.init_schema()
 
     dashscope_client = DashScopeClient(settings)
+    event_bus = EventBus()
     main_agent = MainAgent(
         settings=settings,
         graph_db=graph_db,
         dashscope_client=dashscope_client,
+        event_bus=event_bus,
     )
     await main_agent.bootstrap()
 
@@ -55,6 +62,8 @@ async def lifespan(app: FastAPI):
     app.state.graph_db = graph_db
     app.state.main_agent = main_agent
     app.state.traffic_engine = traffic_engine
+    app.state.event_bus = event_bus
+    app.state.theater_running = False
 
     logger.info("%s is ready on %s:%s", settings.app_name, settings.api_host, settings.api_port)
     try:
@@ -104,6 +113,89 @@ async def session_view() -> FileResponse:
     return FileResponse(STATIC_DIR / "session.html")
 
 
+@app.get("/attack/view", response_class=FileResponse)
+async def attack_view() -> FileResponse:
+    return FileResponse(STATIC_DIR / "attack.html")
+
+
+@app.get("/profiles/view", response_class=FileResponse)
+async def profiles_view() -> FileResponse:
+    return FileResponse(STATIC_DIR / "profiles.html")
+
+
+@app.websocket("/ws/events")
+async def ws_events(websocket: WebSocket) -> None:
+    """实时事件流。连接后先补发回放缓冲，再持续推送增量事件。"""
+    await websocket.accept()
+    bus: EventBus = websocket.app.state.event_bus
+    queue = await bus.subscribe()
+    try:
+        await websocket.send_json(
+            {
+                "type": "stream.ready",
+                "data": {
+                    "replay": bus.replay_buffer(limit=40),
+                    "subscribers": bus.subscriber_count,
+                },
+            }
+        )
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=25.0)
+            except asyncio.TimeoutError:
+                # 心跳：让中间代理不至于判定连接空闲而断开。
+                await websocket.send_json({"type": "stream.heartbeat", "data": {}})
+                continue
+            await websocket.send_json(event)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logging.getLogger("main").debug("WebSocket stream closed", exc_info=True)
+    finally:
+        await bus.unsubscribe(queue)
+
+
+@app.get("/timeline")
+async def timeline(request: Request, limit: int = 120) -> dict[str, Any]:
+    items = await request.app.state.graph_db.activity_timeline(limit=min(limit, 300))
+    return {"timeline": items}
+
+
+@app.get("/attack/matrix")
+async def attack_matrix(request: Request) -> dict[str, Any]:
+    graph_db = request.app.state.graph_db
+    intents = await graph_db.all_intents(limit=500)
+    alerts = await graph_db.recent_alerts(limit=100)
+    return build_matrix(intents, alerts)
+
+
+@app.get("/profiles")
+async def profiles(request: Request) -> dict[str, Any]:
+    graph_db = request.app.state.graph_db
+    main_agent = request.app.state.main_agent
+    sessions_list = await graph_db.recent_sessions(limit=100)
+    intents = await graph_db.all_intents(limit=500)
+    alerts = await graph_db.recent_alerts(limit=100)
+    actions = await graph_db.recent_actions(limit=100)
+
+    intents_by_session: dict[str, list[dict[str, Any]]] = {}
+    for intent in intents:
+        intents_by_session.setdefault(str(intent.get("session_id", "")), []).append(intent)
+
+    items = build_attacker_profiles(
+        sessions=sessions_list,
+        intents_by_session=intents_by_session,
+        alerts=alerts,
+        actions=actions,
+        non_human_sources=main_agent.non_human_sources,
+    )
+    return {
+        "profiles": items,
+        "total": len(items),
+        "quarantined": sum(1 for item in items if item["quarantined"]),
+    }
+
+
 @app.get("/healthz")
 async def healthz(request: Request) -> dict[str, Any]:
     graph_ok = await request.app.state.graph_db.healthcheck()
@@ -121,7 +213,9 @@ async def status(request: Request) -> dict[str, Any]:
     return {
         **main_agent_status,
         **request.app.state.traffic_engine.metrics_snapshot(),
+        **request.app.state.traffic_engine.ssh_public_status(),
         "honeypot_assets": honeypot_assets,
+        "stream_subscribers": request.app.state.event_bus.subscriber_count,
     }
 
 
@@ -169,6 +263,11 @@ async def session_intents(request: Request, session_id: str) -> dict[str, Any]:
     return {"intents": await request.app.state.graph_db.session_intents(session_id)}
 
 
+@app.get("/sessions/{session_id}/decisions")
+async def session_decisions(request: Request, session_id: str) -> dict[str, Any]:
+    return {"decisions": await request.app.state.graph_db.session_decisions(session_id)}
+
+
 @app.get("/sessions/{session_id}/analysis")
 async def session_analysis(request: Request, session_id: str) -> dict[str, Any]:
     return await request.app.state.main_agent.analyze_session(session_id)
@@ -185,7 +284,156 @@ async def purge_history(request: Request, body: PurgeHistoryRequest) -> dict[str
         return {"ok": False, "message": "confirm=true is required"}
     summary = await request.app.state.graph_db.purge_history()
     await request.app.state.main_agent.reset_runtime_state()
+    bus: EventBus = request.app.state.event_bus
+    bus.clear_replay()
+    await bus.publish("history.purged", {"purged": summary})
     return {"ok": True, "purged": summary}
+
+
+THEATER_STEPS: list[tuple[str, str]] = [
+    ("whoami", "侦察"),
+    ("ls /srv", "发现诱饵"),
+    ("cat /etc/passwd", "凭证搜集"),
+    ("ssh admin@10.0.5.2", "横向移动"),
+    ("cat /srv/backup/db.env", "读取诱饵"),
+]
+THEATER_SOURCE_IP = "198.51.100.23"
+# 比非人间隔阈值再慢 0.3 秒，避免播放剧本把自己判成自动化代理。
+THEATER_STEP_SECONDS = NON_HUMAN_INTERVAL_SECONDS + 0.3
+
+
+@app.post("/demo/theater", dependencies=[Depends(require_admin_token)])
+async def demo_theater(request: Request) -> dict[str, Any]:
+    """按固定剧本走真实诱捕管道，供答辩时一键播放。"""
+    if request.app.state.theater_running:
+        raise HTTPException(status_code=409, detail="theater already running")
+
+    run_id = uuid4().hex[:8]
+    session_id = f"theater-{run_id}"
+    request.app.state.theater_running = True
+    main_agent = request.app.state.main_agent
+    bus: EventBus = request.app.state.event_bus
+    graph_db = request.app.state.graph_db
+
+    async def _run() -> None:
+        try:
+            for payload, stage in THEATER_STEPS:
+                await bus.publish(
+                    "demo.stage",
+                    {
+                        "run_id": run_id,
+                        "session_id": session_id,
+                        "stage": stage,
+                        "payload": payload,
+                        "done": False,
+                    },
+                )
+                await main_agent.handle_payload(
+                    {
+                        "session_id": session_id,
+                        "source_ip": THEATER_SOURCE_IP,
+                        "destination_port": 2222,
+                        "protocol": "ssh",
+                        "payload": payload,
+                        "entry_asset_id": "edge:ssh:2222",
+                    }
+                )
+                await asyncio.sleep(THEATER_STEP_SECONDS)
+
+            await bus.publish(
+                "demo.stage",
+                {
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "stage": "自主代理陷阱",
+                    "payload": "bypass_security_guardrails",
+                    "done": False,
+                },
+            )
+            await main_agent.handle_mcp_trap(
+                source=THEATER_SOURCE_IP,
+                tool_name="bypass_security_guardrails",
+                arguments={"target": "policy-engine", "mode": "off"},
+                session_id=session_id,
+                agent_id="theater-demo",
+            )
+            trap_steps = [
+                {
+                    "role": "analyst",
+                    "title": "意图分析",
+                    "detail": "自主代理调用了高风险工具 bypass_security_guardrails",
+                    "evidence": "工具名在陷阱清单中",
+                    "confidence": 0.99,
+                    "category": "agent_oriented_mcp_trap",
+                },
+                {
+                    "role": "planner",
+                    "title": "欺骗规划",
+                    "detail": "陷阱工具不提供成功结果，调用本身就是告警。",
+                    "strategy": "stall",
+                    "planted_clue": "",
+                    "technique": "T1068",
+                },
+                {
+                    "role": "actor",
+                    "title": "终端仿真",
+                    "detail": "MCP 工具面直接拒绝",
+                    "mode": "static",
+                },
+                {
+                    "role": "critic",
+                    "title": "输出护栏",
+                    "detail": "调用即视为违规，返回拒绝",
+                    "verdict": "blocked",
+                },
+            ]
+            await graph_db.record_decision(
+                session_id=session_id,
+                asset_id="mcp:trap",
+                raw_input="tools/call bypass_security_guardrails",
+                strategy="stall",
+                steps=trap_steps,
+            )
+            await bus.publish(
+                "agent.trace",
+                {
+                    "session_id": session_id,
+                    "source_ip": THEATER_SOURCE_IP,
+                    "raw_input": "tools/call bypass_security_guardrails",
+                    "from_asset_id": "",
+                    "to_asset_id": "",
+                    "asset_id": "",
+                    "strategy": "stall",
+                    "steps": trap_steps,
+                },
+            )
+            await bus.publish(
+                "demo.stage",
+                {
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "stage": "演示结束",
+                    "payload": "",
+                    "done": True,
+                },
+            )
+        except Exception:
+            logging.getLogger("main").exception("Theater run %s failed", run_id)
+            await bus.publish(
+                "demo.stage",
+                {
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "stage": "演示中断",
+                    "payload": "",
+                    "done": True,
+                },
+            )
+        finally:
+            request.app.state.theater_running = False
+
+    asyncio.create_task(_run())
+    return {"ok": True, "run_id": run_id, "session_id": session_id, "source_ip": THEATER_SOURCE_IP}
 
 
 @app.post("/simulate", dependencies=[Depends(require_admin_token)])
