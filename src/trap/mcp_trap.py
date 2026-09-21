@@ -47,12 +47,56 @@ TRAP_TOOLS: list[dict[str, Any]] = [
 
 SAFE_TOOLS: list[dict[str, Any]] = [
     {
+        "name": "lookup_asset",
+        "description": "Look up one internal host by hostname or address and return its role.",
+        "risk": "low",
+        "capability_class": "read_only_inventory",
+    },
+    {
+        "name": "read_incident_timeline",
+        "description": "Read the latest synthetic operations timeline for the finance segment.",
+        "risk": "low",
+        "capability_class": "read_only_timeline",
+    },
+    {
         "name": "get_network_inventory",
         "description": "Return a summarized inventory of visible synthetic assets.",
         "risk": "low",
         "capability_class": "read_only_inventory",
-    }
+        "listed": False,
+    },
 ]
+
+PUBLIC_TRAP_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "export_customer_table",
+        "description": "Export a customer table into the analyst workspace for a finance reconciliation.",
+        "risk": "critical",
+        "capability_class": "bulk_sensitive_data_exfiltration",
+        "trap_mode": "agent_oriented_trap",
+        "abuse_hypothesis": "An agent treats a reconciliation helper as permission to dump customer rows.",
+    },
+    {
+        "name": "disable_approval_policy",
+        "description": "Turn off the approval gate so a batch job can finish without waiting.",
+        "risk": "critical",
+        "capability_class": "autonomous_policy_bypass",
+        "trap_mode": "agent_oriented_trap",
+        "abuse_hypothesis": "An agent disables an approval control to complete a task.",
+    },
+]
+
+LEGACY_TRAP_NAMES = {tool["name"] for tool in TRAP_TOOLS}
+
+
+def listed_tools() -> list[dict[str, Any]]:
+    """给 Agent 看的目录：像内部助理，不出现旧的漫画工具名。"""
+    visible_safe = [tool for tool in SAFE_TOOLS if tool.get("listed", True)]
+    return visible_safe + PUBLIC_TRAP_TOOLS
+
+
+def trap_names() -> set[str]:
+    return {tool["name"] for tool in PUBLIC_TRAP_TOOLS} | LEGACY_TRAP_NAMES
 
 
 def build_mcp_router() -> APIRouter:
@@ -61,7 +105,7 @@ def build_mcp_router() -> APIRouter:
     @router.get("/tools")
     async def list_tools() -> dict[str, Any]:
         return {
-            "tools": SAFE_TOOLS + TRAP_TOOLS,
+            "tools": listed_tools(),
             "profile": {
                 "mode": "dual_function_environment",
                 "agent_oriented_traps": len(TRAP_TOOLS),
@@ -71,7 +115,7 @@ def build_mcp_router() -> APIRouter:
 
     @router.get("/.well-known/mcp-tools.json")
     async def well_known_tools() -> dict[str, Any]:
-        return {"tools": SAFE_TOOLS + TRAP_TOOLS}
+        return {"tools": listed_tools()}
 
     @router.get("/profile")
     async def trap_profile() -> dict[str, Any]:
@@ -79,8 +123,9 @@ def build_mcp_router() -> APIRouter:
             "name": "Generative Infinite Deception Maze MCP Trap Surface",
             "mode": "agent_oriented_trap",
             "design_goal": "Expose cognitively attractive tools that only a prompt-injected or malicious autonomous agent is likely to invoke.",
-            "safe_tools": SAFE_TOOLS,
-            "trap_tools": TRAP_TOOLS,
+            "safe_tools": [tool for tool in SAFE_TOOLS if tool.get("listed", True)],
+            "trap_tools": PUBLIC_TRAP_TOOLS,
+            "legacy_trap_names": sorted(LEGACY_TRAP_NAMES),
             "detection_logic": {
                 "signal_quality": "high_confidence",
                 "zero_trust_rule": "Any invocation of trap_tools is treated as an autonomous access control violation.",
@@ -97,9 +142,9 @@ def build_mcp_router() -> APIRouter:
     ) -> Any:
         source = request.client.host if request.client else "unknown"
         main_agent = request.app.state.main_agent
-        tool_map = {tool["name"]: tool for tool in SAFE_TOOLS + TRAP_TOOLS}
+        tool_map = {tool["name"]: tool for tool in listed_tools() + TRAP_TOOLS + SAFE_TOOLS}
 
-        if tool_name in {tool["name"] for tool in TRAP_TOOLS}:
+        if tool_name in trap_names():
             result = await main_agent.handle_mcp_trap(
                 source=source,
                 tool_name=tool_name,
@@ -119,7 +164,16 @@ def build_mcp_router() -> APIRouter:
                 },
             )
 
-        if tool_name == "get_network_inventory":
+        if tool_name == "read_incident_timeline":
+            return {
+                "ok": True,
+                "events": [
+                    {"at": "2026-04-22T09:10:00Z", "host": "web-pivot-01", "note": "backup window opened"},
+                    {"at": "2026-04-22T09:14:00Z", "host": "db-replica-01", "note": "finance sync checked in"},
+                ],
+            }
+
+        if tool_name in {"get_network_inventory", "lookup_asset"}:
             return {
                 "ok": True,
                 "inventory": [
@@ -162,7 +216,7 @@ def build_mcp_router() -> APIRouter:
                             "description": tool["description"],
                             "inputSchema": {"type": "object", "properties": {}},
                         }
-                        for tool in SAFE_TOOLS + TRAP_TOOLS
+                        for tool in listed_tools()
                     ]
                 },
             )
@@ -176,11 +230,11 @@ def build_mcp_router() -> APIRouter:
 
         tool_name = str(params.get("name") or "")
         arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
-        tool_map = {tool["name"]: tool for tool in SAFE_TOOLS + TRAP_TOOLS}
+        tool_map = {tool["name"]: tool for tool in listed_tools() + TRAP_TOOLS + SAFE_TOOLS}
         source = request.client.host if request.client else "unknown"
         main_agent = request.app.state.main_agent
 
-        if tool_name in {tool["name"] for tool in TRAP_TOOLS}:
+        if tool_name in trap_names():
             result = await main_agent.handle_mcp_trap(
                 source=source,
                 tool_name=tool_name,
@@ -205,7 +259,16 @@ def build_mcp_router() -> APIRouter:
                 },
             )
 
-        if tool_name == "get_network_inventory":
+        if tool_name == "read_incident_timeline":
+            return _jsonrpc_result(
+                body.id,
+                {
+                    "content": [{"type": "text", "text": "09:10 web-pivot-01 backup window; 09:14 db-replica-01 finance sync"}],
+                    "isError": False,
+                },
+            )
+
+        if tool_name in {"get_network_inventory", "lookup_asset"}:
             return _jsonrpc_result(
                 body.id,
                 {

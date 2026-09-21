@@ -39,7 +39,7 @@ def test_dangerous_rm_does_not_claim_success_wipe():
     result = asyncio.run(_agent().handle_input("rm -rf /"))
     text = result["response"].lower()
     assert "permission denied" in text or "dangerous" in text or "cannot" in text
-    assert result["actor_mode"] == "deterministic"
+    assert result["actor_mode"] == "interpreter"
 
 
 def test_ls_places_clue_filename_without_comment():

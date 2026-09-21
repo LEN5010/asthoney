@@ -53,7 +53,7 @@
             <a class="link-button" href="/attack/view">攻击矩阵</a>
             <a class="link-button" href="/profiles/view">攻击者画像</a>
             <a class="link-button" href="/sessions/view">SSH 会话列表</a>
-            <button class="button primary" id="theaterBtn" type="button">播放杀伤链</button>
+            <button class="link-button" id="theaterBtn" type="button">运行演练</button>
             <button class="button" id="refreshBtn" type="button">手动刷新</button>
           </div>
         </div>
@@ -95,6 +95,18 @@
             <div class="card-body">
               <div class="live-feed" id="liveFeed">
                 <div class="empty-state">等待诱捕事件。连接 2222 端口或运行 scripts/demo_smoke.sh 后，这里会逐条弹出。</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="card span-12">
+            <div class="card-header">
+              <h2 class="card-title">正在交战</h2>
+              <span class="card-meta" id="engagementMeta">0 条会话</span>
+            </div>
+            <div class="card-body">
+              <div class="stack" id="engagementList">
+                <div class="empty-state">还没有 SSH 会话。Agent 用 var/ssh/lure_ed25519 连 2222 之后，这里会显示当前主机和最后一条命令。</div>
               </div>
             </div>
           </article>
@@ -217,6 +229,8 @@
       theaterRationale: document.getElementById("theaterRationale"),
       theaterStage: document.getElementById("theaterStage"),
       theaterBtn: document.getElementById("theaterBtn"),
+      engagementList: document.getElementById("engagementList"),
+      engagementMeta: document.getElementById("engagementMeta"),
     };
     const liveItems = [];
     const graphHot = { assetId: "", fromId: "", toId: "" };
@@ -380,6 +394,31 @@
           <div class="inline-meta" style="margin-top:4px;">${escapeHtml(action.reason || "")}</div>
         </article>
       `).join("");
+    }
+
+    function renderEngagements(sessions) {
+      const items = (sessions || []).slice(0, 6);
+      els.engagementMeta.textContent = `${items.length} 条会话`;
+      if (!items.length) {
+        els.engagementList.innerHTML = '<div class="empty-state">还没有 SSH 会话。Agent 用 var/ssh/lure_ed25519 连 2222 之后，这里会显示当前主机和最后一条命令。</div>';
+        return;
+      }
+      els.engagementList.innerHTML = items.map((session) => {
+        const hosts = (session.visited_hosts || []).filter(Boolean);
+        const here = hosts.length ? hosts[hosts.length - 1] : (session.entry_hostname || "边缘主机");
+        return `
+          <article class="list-item">
+            <div class="list-item-head">
+              <strong class="mono">${escapeHtml(truncate(session.session_id || "", 28))}</strong>
+              <a class="link-button" href="/session/view?session_id=${encodeURIComponent(session.session_id || "")}">打开</a>
+            </div>
+            <div class="inline-meta" style="margin-top:4px;">
+              ${escapeHtml(session.source_ip || "unknown")} · 当前主机 <b>${escapeHtml(here)}</b>
+              · 最后命令 <span class="mono">${escapeHtml(truncate(session.last_payload || "—", 48))}</span>
+            </div>
+          </article>
+        `;
+      }).join("");
     }
 
     function renderSessions(sessions) {
@@ -587,6 +626,7 @@
         renderAlerts(alerts.alerts || []);
         renderActions(actions.actions || []);
         renderSessions(sessions.sessions || []);
+        renderEngagements(sessions.sessions || []);
         renderGraph(graph);
         renderTypeCounts(graph.type_counts || {}, status.honeypot_assets ?? 0);
         els.lastUpdated.textContent = `最近刷新 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`;

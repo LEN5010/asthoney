@@ -140,7 +140,7 @@ async def serve_ssh_process(
             process.exit(0)
             return
 
-        process.stdout.write(prompt)
+        process.stdout.write(f"Last login: Tue Apr 21 23:14:02 2026 from 10.0.4.8\r\n{prompt}")
         while not process.stdin.at_eof():
             line = await process.stdin.readline()
             if not line:

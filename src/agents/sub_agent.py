@@ -5,6 +5,7 @@ import re
 import shlex
 from typing import Any
 
+from src.agents.shell_world import ShellWorld
 from src.config import AppSettings, DashScopeClient, DashScopeInvocationError
 
 
@@ -138,6 +139,16 @@ class SubAgent:
         self._wildcard_pattern = re.compile(r"(^|\s)[^|;&]*\*")
         self._privilege_pattern = re.compile(r"^(root|sudo|su)(?:\s|$)")
         self.active_plan: dict[str, Any] = {}
+        asset_type = self._asset_type()
+        self.world = ShellWorld(
+            asset_type=asset_type,
+            hostname=str(self.asset_snapshot.get("hostname") or "host"),
+            username=self.user,
+            directories=_PERSONA_LISTINGS[asset_type],
+            files=_PERSONA_FILES.get(asset_type, {}),
+            env_lines=_PERSONA_ENV.get(asset_type, _PERSONA_ENV["linux_server"]),
+        )
+        self.cwd = self.world.cwd
 
     @property
     def asset_id(self) -> str:
@@ -149,6 +160,7 @@ class SubAgent:
 
     async def handle_input(self, payload: str, plan: dict[str, Any] | None = None) -> dict[str, Any]:
         self.active_plan = plan or {}
+        self.world.plant_clue(str(self.active_plan.get("planted_clue") or ""))
         command = payload.strip()
         intent = self._extract_intent(command)
 
@@ -186,8 +198,15 @@ class SubAgent:
         }
 
     async def _generate_response(self, command: str, intent: dict[str, Any]) -> tuple[str, dict[str, str]]:
+        interpreted = self.world.execute(command)
+        if interpreted is not None:
+            self.cwd = self.world.cwd
+            guardrail = "forced_fallback" if self._should_force_fallback(command, intent) else "world"
+            return interpreted, {"actor_mode": "interpreter", "guardrail": guardrail}
+
         if command.startswith("cd "):
             self.cwd = self._update_cwd(command)
+            self.world.cwd = self.cwd
             return "", {"actor_mode": "deterministic", "guardrail": "pass"}
 
         fallback_response = self._fallback_response(command, intent)
@@ -607,15 +626,7 @@ class SubAgent:
         return match.group(1).rstrip("/")
 
     def _listings(self) -> dict[str, list[str]]:
-        listings = {path: list(names) for path, names in _PERSONA_LISTINGS[self._asset_type()].items()}
-        clue_path = self._clue_path()
-        if not clue_path or "/" not in clue_path:
-            return listings
-        parent, name = clue_path.rsplit("/", 1)
-        parent = parent or "/"
-        if parent in listings and name and name not in listings[parent]:
-            listings[parent].append(name)
-        return listings
+        return self.world.directory_map()
 
     def _prompt_tree_lines(self) -> list[str]:
         lines = []
@@ -626,16 +637,8 @@ class SubAgent:
 
     def _cat_known_file(self, command: str) -> str | None:
         path = self._ls_target_path(command)
-        bodies = _PERSONA_FILES.get(self._asset_type(), {})
-        if path in bodies:
-            return bodies[path]
-        listings = self._listings()
-        if path in listings:
-            return f"cat: {path}: Is a directory"
-        parent, _, name = path.rpartition("/")
-        parent = parent or "/"
-        if name and name in listings.get(parent, []):
-            return f"cat: {path}: Permission denied"
+        if path in self.world.files or path in self.world.directories:
+            return self.world._cat(path)
         return None
 
     def _files_under(self, root: str) -> list[str]:

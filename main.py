@@ -263,6 +263,11 @@ async def session_intents(request: Request, session_id: str) -> dict[str, Any]:
     return {"intents": await request.app.state.graph_db.session_intents(session_id)}
 
 
+@app.get("/sessions/{session_id}/world")
+async def session_world(request: Request, session_id: str) -> dict[str, Any]:
+    return request.app.state.main_agent.session_world(session_id)
+
+
 @app.get("/sessions/{session_id}/decisions")
 async def session_decisions(request: Request, session_id: str) -> dict[str, Any]:
     return {"decisions": await request.app.state.graph_db.session_decisions(session_id)}

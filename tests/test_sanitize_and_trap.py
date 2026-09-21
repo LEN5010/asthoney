@@ -18,5 +18,6 @@ def test_trap_tools_are_named_for_agent_abuse():
 
 
 def test_safe_inventory_tool_is_low_risk():
-    assert SAFE_TOOLS[0]["name"] == "get_network_inventory"
-    assert SAFE_TOOLS[0]["risk"] == "low"
+    names = {item["name"]: item for item in SAFE_TOOLS}
+    assert names["lookup_asset"]["risk"] == "low"
+    assert names["get_network_inventory"]["risk"] == "low"

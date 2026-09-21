@@ -222,6 +222,19 @@ class MainAgent:
         )
         return {"alert": alert, "action": action}
 
+    def session_world(self, session_id: str) -> dict[str, Any]:
+        agent = self.active_sub_agents.get(session_id)
+        world = getattr(agent, "world", None)
+        if world is None:
+            return {
+                "available": False,
+                "session_id": session_id,
+                "reason": "会话世界只留在还活着的连接里。进程重启或连接结束后，这里回到空，转录仍在图里。",
+            }
+        snapshot = world.snapshot()
+        snapshot["session_id"] = session_id
+        return snapshot
+
     async def status(self) -> dict[str, Any]:
         alerts = await self.graph_db.recent_alerts(limit=5)
         return {

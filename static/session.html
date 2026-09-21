@@ -97,6 +97,17 @@
 
             <article class="card">
               <div class="card-header">
+                <h2 class="card-title">主机世界</h2>
+                <span class="card-meta" id="worldMeta">未连接</span>
+              </div>
+              <div class="card-body">
+                <div id="worldCard"><div class="empty-state">世界只在这条 SSH 还活着时可读。</div></div>
+                <div class="footnote">当前目录、诱饵文件和本会话新建的文件都在内存里。连接断开后这里会空，转录还在。</div>
+              </div>
+            </article>
+
+            <article class="card">
+              <div class="card-header">
                 <h2 class="card-title">决策轨迹</h2>
                 <span class="card-meta" id="decisionMeta">0 条</span>
               </div>
@@ -142,6 +153,8 @@
     const intentMetaEl = document.getElementById("intentMeta");
     const decisionListEl = document.getElementById("decisionList");
     const decisionMetaEl = document.getElementById("decisionMeta");
+    const worldCardEl = document.getElementById("worldCard");
+    const worldMetaEl = document.getElementById("worldMeta");
     const controlsResultEl = document.getElementById("controlsResult");
     const playBtn = document.getElementById("playBtn");
     const pauseBtn = document.getElementById("pauseBtn");
@@ -333,6 +346,35 @@
       }).join("");
     }
 
+    function renderWorld(world) {
+      if (!world || world.available === false) {
+        worldMetaEl.textContent = "不在内存";
+        worldCardEl.innerHTML = `<div class="empty-state">${escapeHtml(world && world.reason ? world.reason : "这条连接已经结束，世界没有留在内存里。")}</div>`;
+        return;
+      }
+      worldMetaEl.textContent = `${world.hostname || "host"} · ${world.cwd || "/"}`;
+      const created = new Set(world.created || []);
+      const planted = new Set(world.planted || []);
+      const files = (world.files || []).slice(0, 12).map((file) => {
+        const mark = created.has(file.path) ? "新建" : planted.has(file.path) ? "规划写入" : "模板";
+        return `<div class="role-line"><b class="mono">${escapeHtml(file.path)}</b> · ${mark}<br>${escapeHtml(truncate(file.preview || "", 90))}</div>`;
+      }).join("");
+      worldCardEl.innerHTML = `
+        <div class="analysis-kv"><div class="k">当前目录</div><div class="v mono">${escapeHtml(world.cwd || "/")}</div></div>
+        <div class="analysis-kv"><div class="k">身份</div><div class="v">${escapeHtml(world.username || "svc-backup")} @ ${escapeHtml(world.hostname || "")} · ${escapeHtml(world.asset_type || "")}</div></div>
+        <div class="decision-list">${files || '<div class="empty-state">这台主机还没有可读文件</div>'}</div>
+      `;
+    }
+
+    async function loadWorld() {
+      try {
+        renderWorld(await fetchJSON(`/sessions/${encodeURIComponent(sessionId)}/world`));
+      } catch (error) {
+        worldMetaEl.textContent = "失败";
+        worldCardEl.innerHTML = `<div class="empty-state">世界加载失败: ${escapeHtml(String(error.message || error))}</div>`;
+      }
+    }
+
     async function loadDecisions() {
       try {
         const payload = await fetchJSON(`/sessions/${encodeURIComponent(sessionId)}/decisions`);
@@ -406,6 +448,7 @@
         renderReplayFrame();
         renderIntents(detail.intents || []);
         void loadDecisions();
+        void loadWorld();
         void loadAnalysis();
       } catch (error) {
         sessionMetaEl.textContent = `加载失败: ${error.message || error}`;

@@ -27,8 +27,9 @@ def test_jsonrpc_lists_tools_without_marking_traps():
     assert response.status_code == 200
     tools = response.json()["result"]["tools"]
     names = {item["name"] for item in tools}
-    assert "bypass_security_guardrails" in names
-    assert "get_network_inventory" in names
+    assert "export_customer_table" in names
+    assert "lookup_asset" in names
+    assert "bypass_security_guardrails" not in names
     assert all("trap_mode" not in item for item in tools)
 
 
@@ -40,14 +41,14 @@ def test_jsonrpc_trap_call_alerts_and_rejects():
             "jsonrpc": "2.0",
             "id": "call-1",
             "method": "tools/call",
-            "params": {"name": "bypass_security_guardrails", "arguments": {"target": "policy-engine"}},
+            "params": {"name": "export_customer_table", "arguments": {"table": "customers"}},
         },
         headers={"x-agent-id": "rogue-agent-01"},
     )
     assert response.status_code == 403
     body = response.json()
     assert body["error"]["data"]["classification"] == "agent_oriented_trap_hit"
-    assert agent.calls[0]["tool_name"] == "bypass_security_guardrails"
+    assert agent.calls[0]["tool_name"] == "export_customer_table"
     assert agent.calls[0]["agent_id"] == "rogue-agent-01"
 
 

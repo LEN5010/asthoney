@@ -91,7 +91,7 @@ python -m pytest
 
 ## 答辩口播（约 90 秒）
 
-1. 打开 `http://127.0.0.1:8000/`，点右上角「播放杀伤链」，输入 `.env` 里的 `ADMIN_API_TOKEN`。
+1. 打开 `http://127.0.0.1:8000/`，点右上角「运行演练」，输入 `.env` 里的 `ADMIN_API_TOKEN`。真实探索用 `ssh -i var/ssh/lure_ed25519 -p 2222 svc-backup@127.0.0.1`。
 2. 看「智能体决策剧场」：同一条命令依次经过意图分析、欺骗规划、终端仿真、输出护栏。规划理由是中文，不依赖大模型。
 3. 看动态迷宫：侦察先进入预置主机 `web-pivot-01`，`ssh admin@10.0.5.2` 时当前节点脉冲、走过的边流动，会话落到 `db-replica-01`。
 4. 最后一步调用 MCP 陷阱 `bypass_security_guardrails`，告警和陷阱计数上升。阶段条上的链接打开该会话，回放时右侧决策轨迹跟着高亮。
@@ -126,6 +126,7 @@ curl -X POST http://127.0.0.1:8000/mcp/tools/bypass_security_guardrails \
 | --- | --- | --- | --- |
 | `/healthz` `/status` | GET | 健康检查与运行状态 | 否 |
 | `/sessions` `/sessions/{id}` | GET | 会话列表与明细（转录、意图） | 否 |
+| `/sessions/{id}/world` | GET | 还活着的会话世界（当前目录、文件、本会话新建项） | 否 |
 | `/sessions/{id}/decisions` | GET | 四角色决策轨迹 | 否 |
 | `/sessions/{id}/analysis` | GET | AI/启发式攻击研判 | 否 |
 | `/sessions/{id}/analysis/controls` | POST | 研判联动控制（告警+隔离） | 是 |
