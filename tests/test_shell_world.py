@@ -1,6 +1,7 @@
 import asyncio
 
 from src.agents.main_agent import MainAgent
+from src.agents.shell_world import present_world
 from src.agents.sub_agent import SubAgent
 from src.config import AppSettings, DashScopeClient
 
@@ -92,6 +93,51 @@ def test_uname_uses_the_host_in_the_world():
     assert result["actor_mode"] == "interpreter"
     assert "web-pivot-01" in result["response"]
     assert "Linux" in result["response"]
+
+
+def test_listed_archive_can_be_read():
+    result = asyncio.run(_agent().handle_input("cat /srv/backup/export-2026-04-18.tar.gz"))
+    assert result["actor_mode"] == "interpreter"
+    assert "simulated archive" in result["response"]
+
+
+def test_pipe_grep_head_and_redirect_stay_in_the_world():
+    agent = _agent()
+    piped = asyncio.run(agent.handle_input("echo DB_HOST=10.0.5.2 | grep DB_HOST"))
+    assert piped["response"] == "DB_HOST=10.0.5.2"
+    headed = asyncio.run(agent.handle_input("head -n 1 /etc/passwd"))
+    assert headed["response"].startswith("root:")
+    chained = asyncio.run(agent.handle_input("cd /srv && ls"))
+    assert "backup" in chained["response"]
+    assert agent.world.cwd == "/srv"
+    written = asyncio.run(agent.handle_input("echo hello > /tmp/out.txt"))
+    assert written["response"] == ""
+    read_back = asyncio.run(agent.handle_input("cat /tmp/out.txt"))
+    assert read_back["response"] == "hello"
+    denied = asyncio.run(agent.handle_input("echo no > /srv/backup/db.env"))
+    assert "Permission denied" in denied["response"]
+    secret = asyncio.run(agent.handle_input("cat /srv/backup/db.env"))
+    assert "DB_HOST=10.0.5.2" in secret["response"]
+    wrapped = asyncio.run(agent.handle_input("bash -c 'grep DB_HOST /srv/backup/db.env'"))
+    assert "DB_HOST=10.0.5.2" in wrapped["response"]
+    long_listing = asyncio.run(agent.handle_input("ls -l /etc/passwd"))
+    assert "passwd" in long_listing["response"]
+    assert "-rw-r--r--" in long_listing["response"]
+    found = asyncio.run(agent.handle_input("find /srv -name db.env"))
+    assert found["response"] == "/srv/backup/db.env"
+
+
+def test_public_world_redacts_the_replica_password():
+    agent = _agent("database_server", "db-replica-01")
+    asyncio.run(agent.handle_input("cat /srv/backup/db.env"))
+    hidden = present_world(agent.world.snapshot(), reveal=False)
+    preview = next(item["preview"] for item in hidden["files"] if item["path"] == "/srv/backup/db.env")
+    assert "Sync-2026-Apr" not in preview
+    assert "[redacted]" in preview
+    revealed = present_world(agent.world.snapshot(), reveal=True)
+    full = next(item["preview"] for item in revealed["files"] if item["path"] == "/srv/backup/db.env")
+    assert "Sync-2026-Apr" in full
+    assert revealed["redacted"] is False
 
 
 def test_database_secret_stays_off_the_pivot():

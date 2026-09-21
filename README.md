@@ -126,7 +126,7 @@ curl -X POST http://127.0.0.1:8000/mcp/tools/bypass_security_guardrails \
 | --- | --- | --- | --- |
 | `/healthz` `/status` | GET | 健康检查与运行状态 | 否 |
 | `/sessions` `/sessions/{id}` | GET | 会话列表与明细（转录、意图） | 否 |
-| `/sessions/{id}/world` | GET | 还活着的会话世界（当前目录、文件、本会话新建项） | 否 |
+| `/sessions/{id}/world` | GET | 会话世界。跳过的主机都留在快照里。不带令牌时口令和私钥打码，带 `X-Admin-Token` 才看全文 | 全文需要令牌 |
 | `/sessions/{id}/decisions` | GET | 四角色决策轨迹 | 否 |
 | `/sessions/{id}/analysis` | GET | AI/启发式攻击研判 | 否 |
 | `/sessions/{id}/analysis/controls` | POST | 研判联动控制（告警+隔离） | 是 |
@@ -144,6 +144,6 @@ curl -X POST http://127.0.0.1:8000/mcp/tools/bypass_security_guardrails \
 
 ## 安全边界说明
 
-- 本系统为课程实验环境：诱捕面全部使用仿真资产与伪造数据。外层 2222 是真实 SSH 握手，登录后的 shell 和内层横向仍是仿真，不在宿主机执行。隔离动作默认 `simulate` 模式，不触碰真实网络。主机密钥和登录私钥由本蜜罐生成，放在 `var/ssh/`，不入库。
+- 本系统为课程实验环境：诱捕面全部使用仿真资产与伪造数据。外层 2222 是真实 SSH 握手，登录后的 shell 和内层横向仍是仿真，不在宿主机执行。解释器能处理管道、`grep`/`head`、重定向和 `bash -c`，改动只落在会话世界。读凭证留在当前主机，只有 `ssh` 到内网地址才换主机，上一台的文件还在快照里。隔离动作默认 `simulate` 模式，不触碰真实网络。主机密钥和登录私钥由本蜜罐生成，放在 `var/ssh/`，不入库。
 - 危险命令（rm/mkfs/reboot 等）仅返回仿真拒绝输出，不在宿主机执行；模型输出经护栏检查后才回写给连接方。
 - 密钥仅从 `.env` 读取，`.env` 不入库。

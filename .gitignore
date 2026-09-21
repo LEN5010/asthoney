@@ -6,5 +6,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .DS_Store
-docs/
+docs/**
+!docs/**/
+!docs/**/*.md
 作品说明材料.md

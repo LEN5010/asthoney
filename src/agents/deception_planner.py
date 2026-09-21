@@ -64,7 +64,7 @@ def plan_deception(
         strategy = "stall"
     elif category == "web_probe" or (category in {"generic_probe", "idle"} and protocol != "ssh"):
         strategy = "banner"
-    elif category in {"credential_access", "lateral_movement"}:
+    elif category == "lateral_movement":
         strategy = "pivot"
     elif category in {"tool_transfer", "collection"}:
         strategy = "stall"
@@ -215,7 +215,7 @@ def _rationale(
         return f"凭证摸索之后立刻横向，沿 {hop} 展开下一跳诱饵。"
     lines = {
         ("deepen", "discovery"): "攻击者还在确认这台机器，目录列表里露出备份线索，引诱继续翻文件。",
-        ("pivot", "credential_access"): f"已经在找凭证，回复里带上下一跳 {hop}，把横向移动接上来。",
+        ("deepen", "credential_access"): "对方在当前主机翻凭证，只露出下一跳提示，会话先不换机器。",
         ("pivot", "lateral_movement"): f"检测到 ssh 横向，沿 {hop} 合成或进入下一跳诱饵。",
         ("stall", "tool_transfer"): "对方在拉工具，拒绝真正传输，只漏出文件名。",
         ("stall", "collection"): "对方在打包数据，挡住导出，只露出归档文件名。",

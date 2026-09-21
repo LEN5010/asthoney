@@ -134,6 +134,7 @@ class SubAgent:
         source_ip: str,
         asset_snapshot: dict[str, Any],
         local_view: dict[str, Any],
+        world: ShellWorld | None = None,
     ) -> None:
         self.settings = settings
         self.dashscope_client = dashscope_client
@@ -151,15 +152,17 @@ class SubAgent:
         self._wildcard_pattern = re.compile(r"(^|\s)[^|;&]*\*")
         self._privilege_pattern = re.compile(r"^(root|sudo|su)(?:\s|$)")
         self.active_plan: dict[str, Any] = {}
-        asset_type = self._asset_type()
-        self.world = ShellWorld(
-            asset_type=asset_type,
-            hostname=str(self.asset_snapshot.get("hostname") or "host"),
-            username=self.user,
-            directories=_PERSONA_LISTINGS[asset_type],
-            files=_PERSONA_FILES.get(asset_type, {}),
-            env_lines=_PERSONA_ENV.get(asset_type, _PERSONA_ENV["linux_server"]),
-        )
+        if world is None:
+            asset_type = self._asset_type()
+            world = ShellWorld(
+                asset_type=asset_type,
+                hostname=str(self.asset_snapshot.get("hostname") or "host"),
+                username=self.user,
+                directories=_PERSONA_LISTINGS[asset_type],
+                files=_PERSONA_FILES.get(asset_type, {}),
+                env_lines=_PERSONA_ENV.get(asset_type, _PERSONA_ENV["linux_server"]),
+            )
+        self.world = world
         self.cwd = self.world.cwd
 
     @property

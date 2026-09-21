@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from src.agents.main_agent import NON_HUMAN_INTERVAL_SECONDS, MainAgent
+from src.agents.shell_world import present_world
 from src.analytics.attack_matrix import build_matrix
 from src.analytics.threat_profile import build_attacker_profiles
 from src.config import DashScopeClient, configure_logging, get_settings
@@ -264,8 +265,16 @@ async def session_intents(request: Request, session_id: str) -> dict[str, Any]:
 
 
 @app.get("/sessions/{session_id}/world")
-async def session_world(request: Request, session_id: str) -> dict[str, Any]:
-    return await request.app.state.main_agent.session_world(session_id)
+async def session_world(
+    request: Request,
+    session_id: str,
+    x_admin_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """公开回看打码口令。请求头带对的管理令牌时返回完整诱饵。"""
+    snapshot = await request.app.state.main_agent.session_world(session_id)
+    expected = request.app.state.settings.admin_api_token
+    reveal = bool(expected) and x_admin_token == expected
+    return present_world(snapshot, reveal=reveal)
 
 
 @app.get("/sessions/{session_id}/decisions")

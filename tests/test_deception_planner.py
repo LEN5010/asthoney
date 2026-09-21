@@ -21,6 +21,12 @@ def test_discovery_deepens_with_backup_clue():
     assert plan["rationale"]
 
 
+def test_credential_read_stays_on_the_current_host():
+    plan = _plan("credential_access", "cat /etc/passwd")
+    assert plan["strategy"] == "deepen"
+    assert "不换" in plan["rationale"]
+
+
 def test_lateral_movement_pivots_to_target():
     plan = _plan("lateral_movement", "ssh admin@10.0.5.2", target_ip="10.0.5.2")
     assert plan["strategy"] == "pivot"

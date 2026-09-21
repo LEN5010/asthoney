@@ -14,6 +14,7 @@ from src.agents.deception_planner import (
     observation_metadata,
     plan_deception,
 )
+from src.agents.shell_world import ssh_hop_banner
 from src.agents.sub_agent import SubAgent
 from src.analytics.attack_matrix import build_matrix
 from src.analytics.threat_profile import compute_threat_score
@@ -23,6 +24,7 @@ from src.realtime.event_bus import EventBus
 
 # 命令间隔不超过该秒数，且占多数时，视为脚本或代理批量探测。
 NON_HUMAN_INTERVAL_SECONDS = 1.5
+_SSH_TARGET = re.compile(r"\bssh\s+(?:-\S+\s+)*(?:\S+@)?(?P<target>\d+\.\d+\.\d+\.\d+)")
 
 
 class MazeState(TypedDict, total=False):
@@ -58,6 +60,7 @@ class MainAgent:
         self.event_bus = event_bus or EventBus()
         self.logger = logging.getLogger(self.__class__.__name__)
         self.active_sub_agents: dict[str, SubAgent] = {}
+        self.session_shells: dict[str, dict[str, Any]] = {}
         self.session_assets: dict[str, str] = {}
         self.session_control_flags: set[str] = set()
         self.quarantined_sources: set[str] = set()
@@ -99,6 +102,7 @@ class MainAgent:
 
     async def close(self) -> None:
         self.active_sub_agents.clear()
+        self.session_shells.clear()
         self.session_assets.clear()
         self.session_control_flags.clear()
         self.quarantined_sources.clear()
@@ -189,6 +193,7 @@ class MainAgent:
         )
         if result.get("close"):
             self.active_sub_agents.pop(session_id, None)
+            self.session_shells.pop(session_id, None)
             self.session_assets.pop(session_id, None)
             self._release_session_controls(session_id)
         if controls:
@@ -224,24 +229,46 @@ class MainAgent:
         )
         return {"alert": alert, "action": action}
 
-    async def _persist_session_world(self, session_id: str) -> None:
-        agent = self.active_sub_agents.get(session_id)
-        world = getattr(agent, "world", None)
-        if world is None:
+    def _keep_shell(self, session_id: str, agent: SubAgent | None) -> None:
+        shells = getattr(self, "session_shells", None)
+        if shells is None or agent is None:
             return
-        snapshot = world.snapshot()
+        shells.setdefault(session_id, {})[agent.asset_id] = agent.world
+
+    def _world_bundle(self, session_id: str) -> dict[str, Any] | None:
+        active = self.active_sub_agents.get(session_id)
+        self._keep_shell(session_id, active)
+        shells = getattr(self, "session_shells", {}).get(session_id) or {}
+        if not shells:
+            return None
+        hosts: list[dict[str, Any]] = []
+        for asset_id, world in shells.items():
+            item = world.snapshot()
+            item["asset_id"] = asset_id
+            hosts.append(item)
+        hosts.sort(key=lambda item: str(item.get("hostname") or ""))
+        active_id = active.asset_id if active is not None else str(hosts[-1].get("asset_id") or "")
+        current = next((item for item in hosts if item.get("asset_id") == active_id), hosts[-1])
+        bundle = dict(current)
+        bundle["active_asset_id"] = active_id
+        bundle["hosts"] = hosts
+        bundle["host_count"] = len(hosts)
+        return bundle
+
+    async def _persist_session_world(self, session_id: str) -> None:
+        snapshot = self._world_bundle(session_id)
+        if snapshot is None:
+            return
         snapshot["session_id"] = session_id
         snapshot["source"] = "stored"
         await self.graph_db.save_session_world(session_id, snapshot)
 
     async def session_world(self, session_id: str) -> dict[str, Any]:
-        agent = self.active_sub_agents.get(session_id)
-        world = getattr(agent, "world", None)
-        if world is not None:
-            snapshot = world.snapshot()
-            snapshot["session_id"] = session_id
-            snapshot["source"] = "live"
-            return snapshot
+        bundle = self._world_bundle(session_id)
+        if bundle is not None:
+            bundle["session_id"] = session_id
+            bundle["source"] = "live"
+            return bundle
         stored = await self.graph_db.load_session_world(session_id)
         if stored:
             stored["available"] = True
@@ -470,12 +497,41 @@ class MainAgent:
 
     async def _engage_sub_agent(self, state: MazeState) -> MazeState:
         event = state["event"]
+        payload = str(event["payload"])
+        previous = self.active_sub_agents.get(state["session_id"])
         sub_agent = await self._get_or_create_sub_agent(
             session_id=state["session_id"],
             source_ip=str(event["source_ip"]),
             target_asset=state["target_asset"],
         )
-        result = await sub_agent.handle_input(str(event["payload"]), plan=state.get("plan"))
+        hopped = _SSH_TARGET.search(payload) and (previous is None or previous.asset_id != sub_agent.asset_id)
+        if hopped:
+            plan = state.get("plan") or {}
+            sub_agent.active_plan = plan
+            sub_agent.world.plant_clue(str(plan.get("planted_clue") or ""))
+            source_ip = str(event.get("source_ip") or "10.0.4.8")
+            key_path = ""
+            if previous is not None:
+                source_ip = str(previous.asset_snapshot.get("ip_address") or source_ip)
+                if "/srv/backup/id_rsa" in previous.world.files:
+                    key_path = "/srv/backup/id_rsa"
+            match = _SSH_TARGET.search(payload)
+            banner = ssh_hop_banner(
+                target=match.group("target") if match else str(sub_agent.asset_snapshot.get("ip_address") or ""),
+                hostname=sub_agent.world.hostname,
+                source_ip=source_ip,
+                key_path=key_path,
+            )
+            return {
+                "response": banner,
+                "prompt": str(sub_agent.prompt),
+                "close": False,
+                "target_asset": sub_agent.asset_snapshot,
+                "actor_mode": "interpreter",
+                "guardrail": "world",
+                "terminal_intent": sub_agent._extract_intent(payload.strip()),
+            }
+        result = await sub_agent.handle_input(payload, plan=state.get("plan"))
         extracted_intent = result.get("intent") if isinstance(result.get("intent"), dict) else {}
         if result.get("close"):
             self.active_sub_agents.pop(state["session_id"], None)
@@ -597,6 +653,8 @@ class MainAgent:
         if existing and existing.asset_id == target_asset["asset_id"]:
             return existing
 
+        self._keep_shell(session_id, existing)
+        reused = (getattr(self, "session_shells", {}).get(session_id) or {}).get(target_asset["asset_id"])
         local_view = await self.graph_db.fetch_local_view(target_asset["asset_id"])
         sub_agent = SubAgent(
             settings=self.settings,
@@ -605,8 +663,10 @@ class MainAgent:
             source_ip=source_ip,
             asset_snapshot=target_asset,
             local_view=local_view,
+            world=reused,
         )
         self.active_sub_agents[session_id] = sub_agent
+        self._keep_shell(session_id, sub_agent)
         return sub_agent
 
     async def _seed_topology(self) -> None:
