@@ -508,6 +508,20 @@ class GraphDB:
         records = await self._run_many(query, {"limit": limit})
         return [self._hydrate_alert(item["alert"]) for item in records]
 
+    async def session_alerts(self, session_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        """按 (Session)-[:RAISED]->(Alert) 边取会话关联的告警。"""
+        query = """
+        MATCH (s:Session {session_id: $session_id})-[:RAISED]->(a:Alert)
+        RETURN a {
+            .*,
+            details: a.details_json
+        } AS alert
+        ORDER BY a.created_at DESC
+        LIMIT $limit
+        """
+        records = await self._run_many(query, {"session_id": session_id, "limit": limit})
+        return [self._hydrate_alert(item["alert"]) for item in records]
+
     async def asset_count(self) -> int:
         record = await self._run_single("MATCH (a:Asset) RETURN count(a) AS total", {})
         return int(record["total"])
@@ -628,7 +642,7 @@ class GraphDB:
             "jit_synthesized_assets": jit_synthesized_assets,
         }
 
-    async def session_detail(self, session_id: str) -> dict[str, Any]:
+    async def session_detail(self, session_id: str) -> dict[str, Any] | None:
         summary_query = """
         MATCH (s:Session {session_id: $session_id})<-[:INITIATED]-(i:Identity)
         OPTIONAL MATCH (s)-[:TARGETS]->(entry:Asset)
@@ -672,7 +686,10 @@ class GraphDB:
         } AS intent
         ORDER BY i.created_at ASC
         """
-        summary = self._normalize_graph_value((await self._run_single(summary_query, {"session_id": session_id}))["session"])
+        summary_records = await self._run_many(summary_query, {"session_id": session_id})
+        if not summary_records:
+            return None
+        summary = self._normalize_graph_value(summary_records[0]["session"])
         transcript_records = await self._run_many(transcript_query, {"session_id": session_id})
         intent_records = await self._run_many(intent_query, {"session_id": session_id})
         return {
@@ -991,7 +1008,7 @@ class GraphDB:
     def _derive_hostname(self, target_ip: str, intent: dict[str, Any]) -> str:
         category = intent.get("category", "unknown")
         hostname_map = {
-            "lateral_movement": "db-replica-01",
+            "lateral_movement": f"node-{target_ip.replace('.', '-')}",
             "credential_access": "vault-cache-02",
             "collection": "finance-archive-01",
             "tool_transfer": "oss-sync-bridge",

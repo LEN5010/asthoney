@@ -1,0 +1,103 @@
+{
+  "checked_at": "2026-09-23T13:32:11.468Z",
+  "base": "http://127.0.0.1:8000",
+  "results": [
+    {
+      "name": "默认浅色且无旧主题影响",
+      "passed": true
+    },
+    {
+      "name": "令牌错误清除凭证且可重新操作",
+      "passed": true
+    },
+    {
+      "name": "认证弹窗取消与焦点恢复",
+      "passed": true
+    },
+    {
+      "name": "固定演示链完成及重复点击保护",
+      "passed": true,
+      "session_id": "theater-27b971d7"
+    },
+    {
+      "name": "WebSocket 断线重连",
+      "passed": true
+    },
+    {
+      "name": "局部接口失败不影响拓扑且可恢复",
+      "passed": true
+    },
+    {
+      "name": "会话搜索、排序和清理取消",
+      "passed": true
+    },
+    {
+      "name": "回放播放、暂停、重置、决策同步与键盘标签",
+      "passed": true
+    },
+    {
+      "name": "攻击矩阵点击与全部证据恢复",
+      "passed": true
+    },
+    {
+      "name": "画像选择在刷新后保持",
+      "passed": true
+    },
+    {
+      "name": "布局与截图 overview 1366×768",
+      "passed": true
+    },
+    {
+      "name": "布局与截图 sessions 1366×768",
+      "passed": true
+    },
+    {
+      "name": "布局与截图 replay 1366×768",
+      "passed": true
+    },
+    {
+      "name": "布局与截图 attack 1366×768",
+      "passed": true
+    },
+    {
+      "name": "布局与截图 profiles 1366×768",
+      "passed": true
+    },
+    {
+      "name": "布局与截图 overview 1920×1080",
+      "passed": true
+    },
+    {
+      "name": "布局与截图 sessions 1920×1080",
+      "passed": true
+    },
+    {
+      "name": "布局与截图 replay 1920×1080",
+      "passed": true
+    },
+    {
+      "name": "布局与截图 attack 1920×1080",
+      "passed": true
+    },
+    {
+      "name": "布局与截图 profiles 1920×1080",
+      "passed": true
+    },
+    {
+      "name": "未知会话错误态",
+      "passed": true
+    },
+    {
+      "name": "空数据状态",
+      "passed": true
+    },
+    {
+      "name": "不可信会话内容按纯文本渲染",
+      "passed": true
+    },
+    {
+      "name": "全部页面无 JavaScript 异常",
+      "passed": true
+    }
+  ]
+}

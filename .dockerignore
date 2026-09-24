@@ -6,3 +6,8 @@ __pycache__
 docs
 *.pyc
 .env
+node_modules
+delivery
+var
+scripts/report/bin
+scripts/report/obj

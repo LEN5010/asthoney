@@ -1,0 +1,44 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mxfile host="app.diagrams.net">
+  <diagram name="data-flow" id="data-flow">
+    <mxGraphModel page="0" pageWidth="900" pageHeight="340">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="2" value="01 接入与消毒&#10;真实 SSH / 演示接口" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F9FC;strokeColor=#8B9DB2;fontColor=#172638;fontFamily=PingFang SC;fontSize=17;spacing=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="20" y="20" width="220" height="90" />
+        </mxCell>
+        <mxCell id="3" value="02 意图与规划&#10;analyze → plan" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F9FC;strokeColor=#8B9DB2;fontColor=#172638;fontFamily=PingFang SC;fontSize=17;spacing=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="330" y="20" width="220" height="90" />
+        </mxCell>
+        <mxCell id="4" value="03 路由与仿真&#10;route → engage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F9FC;strokeColor=#8B9DB2;fontColor=#172638;fontFamily=PingFang SC;fontSize=17;spacing=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="640" y="20" width="220" height="90" />
+        </mxCell>
+        <mxCell id="5" value="04 记录响应来源&#10;critique" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F9FC;strokeColor=#8B9DB2;fontColor=#172638;fontFamily=PingFang SC;fontSize=17;spacing=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="640" y="210" width="220" height="90" />
+        </mxCell>
+        <mxCell id="6" value="05 审计与处置&#10;Neo4j / 模拟隔离" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F9FC;strokeColor=#8B9DB2;fontColor=#172638;fontFamily=PingFang SC;fontSize=17;spacing=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="330" y="210" width="220" height="90" />
+        </mxCell>
+        <mxCell id="7" value="06 展示与回放&#10;REST + WebSocket" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F9FC;strokeColor=#8B9DB2;fontColor=#172638;fontFamily=PingFang SC;fontSize=17;spacing=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="20" y="210" width="220" height="90" />
+        </mxCell>
+        <mxCell id="e0" value="载荷" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#536F91;fontColor=#47566A;fontFamily=PingFang SC;fontSize=13;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="2" target="3">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="e1" value="策略" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#536F91;fontColor=#47566A;fontFamily=PingFang SC;fontSize=13;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="3" target="4">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="e2" value="仿真输出" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#536F91;fontColor=#47566A;fontFamily=PingFang SC;fontSize=13;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="4" target="5">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="e3" value="轨迹与告警" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#536F91;fontColor=#47566A;fontFamily=PingFang SC;fontSize=13;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" edge="1" parent="1" source="5" target="6">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="e4" value="证据" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#536F91;fontColor=#47566A;fontFamily=PingFang SC;fontSize=13;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" edge="1" parent="1" source="6" target="7">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

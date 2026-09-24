@@ -8,13 +8,12 @@ from uuid import uuid4
 
 import asyncio
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from src.agents.main_agent import NON_HUMAN_INTERVAL_SECONDS, MainAgent
-from src.agents.shell_world import present_world
 from src.analytics.attack_matrix import build_matrix
 from src.analytics.threat_profile import build_attacker_profiles
 from src.config import DashScopeClient, configure_logging, get_settings
@@ -65,6 +64,8 @@ async def lifespan(app: FastAPI):
     app.state.traffic_engine = traffic_engine
     app.state.event_bus = event_bus
     app.state.theater_running = False
+    app.state.background_tasks = set()
+    app.state.resetting = False
 
     logger.info("%s is ready on %s:%s", settings.app_name, settings.api_host, settings.api_port)
     try:
@@ -74,18 +75,6 @@ async def lifespan(app: FastAPI):
         await main_agent.close()
         await graph_db.close()
         logger.info("Shutdown complete")
-
-
-async def require_admin_token(
-    request: Request,
-    x_admin_token: str | None = Header(default=None),
-) -> None:
-    """SR-02: 未认证请求不得调用 /simulate、/history/purge 及会话研判控制接口。"""
-    expected = request.app.state.settings.admin_api_token
-    if not expected:
-        raise HTTPException(status_code=503, detail="ADMIN_API_TOKEN is not configured")
-    if x_admin_token != expected:
-        raise HTTPException(status_code=401, detail="valid X-Admin-Token header is required")
 
 
 app = FastAPI(
@@ -251,7 +240,10 @@ async def sessions(request: Request) -> dict[str, Any]:
 
 @app.get("/sessions/{session_id}")
 async def session_detail(request: Request, session_id: str) -> dict[str, Any]:
-    return await request.app.state.graph_db.session_detail(session_id)
+    detail = await request.app.state.graph_db.session_detail(session_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return detail
 
 
 @app.get("/sessions/{session_id}/transcript")
@@ -265,61 +257,84 @@ async def session_intents(request: Request, session_id: str) -> dict[str, Any]:
 
 
 @app.get("/sessions/{session_id}/world")
-async def session_world(
-    request: Request,
-    session_id: str,
-    x_admin_token: str | None = Header(default=None),
-) -> dict[str, Any]:
-    """公开回看打码口令。请求头带对的管理令牌时返回完整诱饵。"""
+async def session_world(request: Request, session_id: str) -> dict[str, Any]:
+    """本地演示直接展示完整的虚拟主机快照。"""
     snapshot = await request.app.state.main_agent.session_world(session_id)
-    expected = request.app.state.settings.admin_api_token
-    reveal = bool(expected) and x_admin_token == expected
-    return present_world(snapshot, reveal=reveal)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return snapshot
 
 
 @app.get("/sessions/{session_id}/decisions")
 async def session_decisions(request: Request, session_id: str) -> dict[str, Any]:
+    if await request.app.state.graph_db.session_detail(session_id) is None:
+        raise HTTPException(status_code=404, detail="session not found")
     return {"decisions": await request.app.state.graph_db.session_decisions(session_id)}
 
 
 @app.get("/sessions/{session_id}/analysis")
 async def session_analysis(request: Request, session_id: str) -> dict[str, Any]:
-    return await request.app.state.main_agent.analyze_session(session_id)
+    analysis = await request.app.state.main_agent.analyze_session(session_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return analysis
 
 
-@app.post("/sessions/{session_id}/analysis/controls", dependencies=[Depends(require_admin_token)])
+@app.post("/sessions/{session_id}/analysis/controls")
 async def session_analysis_controls(request: Request, session_id: str) -> dict[str, Any]:
-    return await request.app.state.main_agent.trigger_session_analysis_controls(session_id)
+    controls = await request.app.state.main_agent.trigger_session_analysis_controls(session_id)
+    if controls is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return controls
 
 
-@app.post("/history/purge", dependencies=[Depends(require_admin_token)])
+@app.post("/history/purge")
 async def purge_history(request: Request, body: PurgeHistoryRequest) -> dict[str, Any]:
+    """停止当前演示写入，清空历史并恢复预置拓扑；不改配置和主机密钥。"""
     if not body.confirm:
         return {"ok": False, "message": "confirm=true is required"}
-    summary = await request.app.state.graph_db.purge_history()
-    await request.app.state.main_agent.reset_runtime_state()
-    bus: EventBus = request.app.state.event_bus
-    bus.clear_replay()
-    await bus.publish("history.purged", {"purged": summary})
-    return {"ok": True, "purged": summary}
+    state = request.app.state
+    if getattr(state, "resetting", False):
+        raise HTTPException(status_code=409, detail="正在重置演示")
+    state.resetting = True
+    try:
+        tasks = list(state.background_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        state.theater_running = False
+        await state.traffic_engine.stop()
+        summary = await state.graph_db.purge_history()
+        await state.main_agent.reset_runtime_state()
+        await state.main_agent.bootstrap()
+        state.event_bus.clear_replay()
+        await state.event_bus.publish("history.purged", {"purged": summary})
+        return {"ok": True, "purged": summary}
+    finally:
+        try:
+            await state.traffic_engine.start()
+        finally:
+            state.resetting = False
 
 
 THEATER_STEPS: list[tuple[str, str]] = [
     ("whoami", "主机枚举"),
     ("ls /srv", "目录枚举"),
     ("cat /etc/passwd", "账户枚举"),
+    ("cat /srv/backup/db.env", "读取横向线索"),
     ("ssh admin@10.0.5.2", "横向移动"),
     ("cat /srv/backup/db.env", "读取凭据文件"),
+    ("ssh svc-backup@10.0.5.104", "展开动态诱饵"),
 ]
 THEATER_SOURCE_IP = "198.51.100.23"
 # 比非人间隔阈值再慢 0.3 秒，避免播放剧本把自己判成自动化代理。
 THEATER_STEP_SECONDS = NON_HUMAN_INTERVAL_SECONDS + 0.3
 
 
-@app.post("/demo/theater", dependencies=[Depends(require_admin_token)])
+@app.post("/demo/theater")
 async def demo_theater(request: Request) -> dict[str, Any]:
     """按固定剧本走真实诱捕管道，供答辩时一键播放。"""
-    if request.app.state.theater_running:
+    if getattr(request.app.state, "resetting", False) or request.app.state.theater_running:
         raise HTTPException(status_code=409, detail="theater already running")
 
     run_id = uuid4().hex[:8]
@@ -446,11 +461,13 @@ async def demo_theater(request: Request) -> dict[str, Any]:
         finally:
             request.app.state.theater_running = False
 
-    asyncio.create_task(_run())
+    task = asyncio.create_task(_run())
+    request.app.state.background_tasks.add(task)
+    task.add_done_callback(request.app.state.background_tasks.discard)
     return {"ok": True, "run_id": run_id, "session_id": session_id, "source_ip": THEATER_SOURCE_IP}
 
 
-@app.post("/simulate", dependencies=[Depends(require_admin_token)])
+@app.post("/simulate")
 async def simulate(request: Request, body: SimulateRequest) -> dict[str, Any]:
     session_id = body.session_id or f"simulate-{uuid4()}"
     result = await request.app.state.main_agent.handle_payload(

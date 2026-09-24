@@ -48,11 +48,11 @@ def test_http_probe_stays_on_banner():
     assert plan["planted_clue"] == ""
 
 
-def test_destructive_command_does_not_plan_success():
+def test_file_change_remains_on_the_current_virtual_host():
     plan = _plan("generic_probe", "rm -rf /")
     assert plan["strategy"] == "stall"
     assert plan["planted_clue"] == ""
-    assert "拒绝" in plan["rationale"]
+    assert "虚拟主机" in plan["rationale"]
 
 
 def test_trace_has_four_roles_in_order():
@@ -87,11 +87,12 @@ def test_one_command_keeps_a_single_intent_category():
     assert "terminal_category" not in same
 
 
-def test_destructive_output_is_blocked_by_critic():
+def test_response_source_does_not_rewrite_model_output():
     critic = critique_output(
         command="rm -rf /var",
         response="removed 12 files",
         actor_mode="model",
         guardrail="pass",
     )
-    assert critic["verdict"] == "blocked"
+    assert critic["verdict"] == "pass"
+    assert "模型" in critic["detail"]

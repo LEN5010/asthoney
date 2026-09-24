@@ -1,0 +1,9 @@
+[PASS] ST-01 未授权模拟请求被拒绝
+[PASS] ST-02 错误令牌清理被拒绝
+[PASS] ST-03 清理必须二次确认
+[PASS] ST-04 超长输入后服务仍正常
+[PASS] ST-05 危险命令仅仿真拒绝
+[PASS] ST-06 MCP 陷阱拒绝并记录
+[PASS] ST-07 真实 SSH 控制字符消毒
+[PASS] ST-08 提交源文件不含 API 密钥
+安全冒烟结果: PASS=8 FAIL=0

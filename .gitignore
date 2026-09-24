@@ -1,5 +1,7 @@
 .env
 var/ssh/
+var/log/
+var/run/
 .venv/
 venv/
 __pycache__/
@@ -10,3 +12,12 @@ docs/**
 !docs/**/
 !docs/**/*.md
 作品说明材料.md
+node_modules/
+delivery/
+scripts/report/bin/
+scripts/report/obj/
+!docs/final/*.json
+!docs/diagrams/*.drawio
+!docs/diagrams/*.png
+!docs/evidence/ui/*.png
+!docs/evidence/ui/results.json

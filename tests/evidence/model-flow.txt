@@ -1,0 +1,2 @@
+{"check": "configured_session_analysis", "analysis_source": "dashscope", "transcript_items": 10, "summary_present": true}
+{"check": "configured_terminal_actor", "actor_mode": "model", "guardrail": "pass", "response_present": true}

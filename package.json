@@ -1,0 +1,8 @@
+{
+  "name": "asthoney-ui-verification",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Optional browser checks; not required to run the application",
+  "scripts": {"test:ui": "node tests/ui/smoke.cjs"},
+  "devDependencies": {"playwright": "1.62.1"}
+}

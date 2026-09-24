@@ -1,15 +1,12 @@
-"""最外层真实 SSH 入口。
-
-握手、主机密钥和用户认证走标准 SSH。认证通过后的 shell 只把每一行交给
-主智能体，不在宿主机执行命令。
-"""
-
+"""真实 SSH 接入：免登录凭据，一个连接对应一个连续的虚拟主机会话。"""
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import shlex
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 import asyncssh
@@ -19,155 +16,111 @@ logger = logging.getLogger(__name__)
 
 
 def key_dir(root: Path | None = None) -> Path:
-    base = root or Path(__file__).resolve().parents[2]
-    return base / "var" / "ssh"
+    return (root or Path(__file__).resolve().parents[2]) / "var" / "ssh"
 
 
 def ensure_ssh_material(directory: Path) -> dict[str, Any]:
-    """生成或读取蜜罐自己的主机密钥和登录私钥。"""
+    """只保留 SSH 握手所需的服务器主机密钥，不生成客户端登录密钥。"""
     directory.mkdir(parents=True, exist_ok=True)
     host_path = directory / "host_ed25519"
-    lure_path = directory / "lure_ed25519"
-    _write_key_if_missing(host_path)
-    _write_key_if_missing(lure_path)
-    _tighten_key_mode(host_path)
-    _tighten_key_mode(lure_path)
-    host_key = asyncssh.read_private_key(str(host_path))
-    lure_private = asyncssh.read_private_key(str(lure_path))
-    lure_public = asyncssh.read_public_key(str(lure_path) + ".pub")
-    return {
-        "host_key_path": host_path,
-        "lure_private_key": lure_path,
-        "host_fingerprint": host_key.get_fingerprint(),
-        "lure_public": lure_public,
-        "lure_private": lure_private,
-    }
-
-
-def _tighten_key_mode(path: Path) -> None:
-    if path.exists():
-        path.chmod(0o600)
-    pub = Path(str(path) + ".pub")
-    if pub.exists():
-        pub.chmod(0o644)
-
-
-def _write_key_if_missing(path: Path) -> None:
-    if path.exists():
-        return
-    key = asyncssh.generate_private_key("ssh-ed25519")
-    key.write_private_key(str(path))
-    key.write_public_key(str(path) + ".pub")
-    path.chmod(0o600)
-    Path(str(path) + ".pub").chmod(0o644)
-    logger.info("Generated honeypot SSH key %s", path.name)
+    if not host_path.exists():
+        asyncssh.generate_private_key("ssh-ed25519").write_private_key(str(host_path))
+    host_path.chmod(0o600)
+    return {"host_key_path": host_path,
+            "host_fingerprint": asyncssh.read_private_key(str(host_path)).get_fingerprint()}
 
 
 class HoneypotSSHServer(asyncssh.SSHServer):
-    def __init__(self, *, username: str, password: str, lure_public: Any) -> None:
-        self._username = username
-        self._password = password
-        self._lure_public = lure_public
+    def __init__(self, *, main_agent: Any, initial_prompt: str,
+                 connection_changed: Callable[[int], None], connections: set | None = None) -> None:
+        self.main_agent = main_agent
+        self.connection_changed = connection_changed
+        self.connections = connections
+        self.connection = None
+        self.context = {"session_id": str(uuid4()), "prompt": initial_prompt,
+                        "lock": asyncio.Lock()}
+
+    def connection_made(self, conn: asyncssh.SSHServerConnection) -> None:
+        self.connection = conn
+        if self.connections is not None:
+            self.connections.add(conn)
+        # Channel extra info falls through to its parent connection. Repeated exec
+        # channels therefore retain the same world, unlike unrelated SSH connections.
+        conn.set_extra_info(maze_context=self.context)
+        self.connection_changed(1)
 
     def begin_auth(self, username: str) -> bool:
-        return True
+        return False
 
-    def password_auth_supported(self) -> bool:
-        return True
-
-    def public_key_auth_supported(self) -> bool:
-        return True
-
-    def validate_password(self, username: str, password: str) -> bool:
-        return username == self._username and password == self._password
-
-    def validate_public_key(self, username: str, key: Any) -> bool:
-        if username != self._username:
-            return False
-        try:
-            return key.get_fingerprint() == self._lure_public.get_fingerprint()
-        except Exception:
-            logger.debug("Rejected unreadable public key", exc_info=True)
-            return False
+    def connection_lost(self, exc: Exception | None) -> None:
+        if self.connections is not None:
+            self.connections.discard(self.connection)
+        self.main_agent.release_session(self.context["session_id"])
+        self.connection_changed(-1)
 
 
 def write_channel(process: asyncssh.SSHServerProcess, text: str) -> None:
-    """PTY 会话用 CR LF，否则只换行会在终端里变成阶梯。"""
-    if not text:
-        return
+    """PTY 换行由 AsyncSSH line editor 处理；这里只归一化，避免 CRCRLF。"""
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-    if getattr(process, "term_type", None):
-        normalized = normalized.replace("\n", "\r\n")
     process.stdout.write(normalized)
 
 
 def sanitize_shell_input(raw: str) -> str:
+    """去除终端颜色和控制字符，保留实际输入的命令。"""
     without_ansi = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", raw)
-    without_controls = "".join(char for char in without_ansi if char in {"\t", "\n", "\r"} or ord(char) >= 32)
-    return without_controls.strip()
+    return "".join(c for c in without_ansi if c in "\t\n\r" or ord(c) >= 32).strip()
 
 
-async def serve_ssh_process(
-    process: asyncssh.SSHServerProcess,
-    *,
-    main_agent: Any,
-    destination_port: int,
-    initial_prompt: str,
-) -> None:
-    """一个已认证的 shell 或 exec 通道。命令只进仿真管道。"""
-    peer = process.get_extra_info("peername") or ("unknown", 0)
-    source_ip = str(peer[0])
-    session_id = str(uuid4())
-    prompt = initial_prompt
-    entry_asset_id = f"edge:ssh:{destination_port}"
+async def serve_ssh_process(process: asyncssh.SSHServerProcess, *, main_agent: Any,
+                            destination_port: int, initial_prompt: str) -> None:
+    context = process.get_extra_info("maze_context")
+    session_id = context["session_id"]
+    source_ip = str(process.get_extra_info("peername")[0])
 
-    async def run_line(payload: str) -> tuple[str, str, bool]:
-        result = await main_agent.handle_payload(
-            {
-                "session_id": session_id,
-                "source_ip": source_ip,
-                "destination_port": destination_port,
-                "protocol": "ssh",
-                "payload": payload,
-                "entry_asset_id": entry_asset_id,
-            }
-        )
-        response = str(result.get("response") or "")
-        next_prompt = prompt
-        override = result.get("prompt")
-        if isinstance(override, str) and override:
-            next_prompt = override
-        return response, next_prompt, bool(result.get("close"))
+    async def run_line(payload: str) -> tuple[str, bool]:
+        # A shared virtual cwd cannot be mutated concurrently by two exec channels.
+        async with context["lock"]:
+            result = await main_agent.handle_payload({
+                "session_id": session_id, "source_ip": source_ip,
+                "entry_asset_id": f"edge:ssh:{destination_port}",
+                "protocol": "ssh", "destination_port": destination_port, "payload": payload,
+            })
+            context["prompt"] = result.get("prompt") or context["prompt"]
+            return str(result.get("response") or ""), bool(result.get("close"))
 
     try:
-        command = getattr(process, "command", None)
-        if command:
-            payload = sanitize_shell_input(str(command))
+        if process.command:
+            payload = sanitize_shell_input(process.command)
+            # SSH clients often submit a script via `bash -s`, rather than a PTY.
+            # Consume that channel's stdin as virtual commands, never as host code.
+            try:
+                words = shlex.split(payload)
+                while words and words[0].rsplit("/", 1)[-1] in {"bash", "sh"} and "-c" in words:
+                    words = shlex.split(words[words.index("-c") + 1])
+                if words and words[0].rsplit("/", 1)[-1] in {"bash", "sh"} and "-s" in words:
+                    payload = sanitize_shell_input(await process.stdin.read())
+            except (ValueError, IndexError):
+                pass
             if payload:
-                response, _, _ = await run_line(payload)
+                response, _ = await run_line(payload)
                 if response:
-                    write_channel(process, response if response.endswith("\n") else response + "\n")
+                    write_channel(process, response.rstrip("\n") + "\n")
             process.exit(0)
             return
-
-        write_channel(process, f"Last login: Tue Apr 21 23:14:02 2026 from 10.0.4.8\n{prompt}")
-        while not process.stdin.at_eof():
-            line = await process.stdin.readline()
-            if not line:
-                break
+        write_channel(process, context["prompt"])
+        async for line in process.stdin:
             payload = sanitize_shell_input(line)
-            if not payload:
-                write_channel(process, prompt)
-                continue
-            response, prompt, close = await run_line(payload)
-            if response:
-                write_channel(process, response if response.endswith("\n") else response + "\n")
-            if close:
-                break
-            write_channel(process, prompt)
+            if payload:
+                response, close = await run_line(payload)
+                if response:
+                    write_channel(process, response.rstrip("\n") + "\n")
+                if close:
+                    process.exit(0)
+                    return
+            write_channel(process, context["prompt"])
     except asyncssh.BreakReceived:
         pass
     except Exception:
-        logger.exception("SSH honeypot session %s failed", session_id)
+        logger.exception("SSH session %s failed", session_id)
     finally:
         process.close()

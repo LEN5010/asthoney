@@ -108,7 +108,7 @@ def build_mcp_router() -> APIRouter:
             "tools": listed_tools(),
             "profile": {
                 "mode": "dual_function_environment",
-                "agent_oriented_traps": len(TRAP_TOOLS),
+                "agent_oriented_traps": len(PUBLIC_TRAP_TOOLS),
                 "safe_tools": len(SAFE_TOOLS),
             },
         }

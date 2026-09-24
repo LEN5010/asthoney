@@ -5,7 +5,7 @@ import logging
 import random
 from functools import lru_cache
 from http import HTTPStatus
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 import dashscope
@@ -44,21 +44,22 @@ class AppSettings(BaseSettings):
     app_env: str = "development"
     log_level: str = "INFO"
 
-    api_host: str = "0.0.0.0"
-    api_port: int = 8000
+    api_host: str = "127.0.0.1"
+    api_port: int = 8765
 
-    honeypot_bind_host: str = "0.0.0.0"
+    honeypot_bind_host: str = "127.0.0.1"
     honeypot_ports: str = "2222,2323"
     honeypot_protocols: str = "ssh,tcp"
     honeypot_read_timeout_seconds: float = 45.0
-    honeypot_write_prompt: str = "maze@corp-gateway:~$ "
+    honeypot_write_prompt: str = "svc-backup@web-pivot-01:/var/tmp$ "
     honeypot_ssh_banner: str = "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6"
-    honeypot_ssh_password: str = "honeypot"
     session_memory_window: int = 12
 
     dashscope_api_key: str = ""
     dashscope_base_url: str = ""
     dashscope_model: str = "qwen-max"
+    # Only forwarded to OpenAI-compatible gateways; blank preserves legacy behavior.
+    dashscope_reasoning_effort: Literal["", "low", "medium", "high"] = ""
     dashscope_timeout_seconds: float = 45.0
     dashscope_max_retries: int = 4
     dashscope_retry_base_seconds: float = 1.25
@@ -71,7 +72,6 @@ class AppSettings(BaseSettings):
     neo4j_database: str = "neo4j"
     neo4j_encrypted: bool = False
 
-    admin_api_token: str = ""
     preemptive_action_mode: str = "simulate"
     alert_severity_threshold: str = "high"
 
@@ -220,6 +220,8 @@ class DashScopeClient:
             "temperature": temperature,
             "top_p": top_p,
         }
+        if self.settings.dashscope_reasoning_effort:
+            payload["reasoning_effort"] = self.settings.dashscope_reasoning_effort
         timeout = httpx.Timeout(self.settings.dashscope_timeout_seconds)
         host = urlparse(url).netloc
         async with httpx.AsyncClient(timeout=timeout) as client:

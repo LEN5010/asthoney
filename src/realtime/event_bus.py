@@ -30,6 +30,7 @@ class EventBus:
         self._replay: deque[dict[str, Any]] = deque(maxlen=replay_size)
         self._lock = asyncio.Lock()
         self._sequence = 0
+        self._background_tasks: set[asyncio.Task[dict[str, Any]]] = set()
 
     async def publish(self, event_type: str, data: dict[str, Any]) -> dict[str, Any]:
         """广播一条事件，返回落盘/回放用的完整事件体。"""
@@ -62,7 +63,9 @@ class EventBus:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.create_task(self.publish(event_type, data))
+        task = loop.create_task(self.publish(event_type, data))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=SUBSCRIBER_QUEUE_SIZE)

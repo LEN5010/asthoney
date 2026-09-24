@@ -87,23 +87,20 @@ def plan_deception(
 
 
 def critique_output(*, command: str, response: str, actor_mode: str, guardrail: str) -> dict[str, str]:
-    """只判断终端输出能不能交出去，不写告警、不做隔离。"""
-    if guardrail == "model_output_blocked":
-        return {"verdict": "blocked", "detail": "模型输出声称破坏成功，已改用确定性拒绝"}
-    if _DESTRUCTIVE.search(command.strip().lower()):
-        leaked = any(token in response.lower() for token in ("removed", "deleted", "formatted", "rebooting", "wiped"))
-        if leaked:
-            return {"verdict": "blocked", "detail": "破坏性输出未通过护栏"}
-        return {"verdict": "pass", "detail": "破坏性命令只返回仿真拒绝"}
+    """记录响应来源，不拦截或改写模型输出。"""
     if actor_mode == "model":
-        return {"verdict": "pass", "detail": "大模型输出通过护栏"}
-    if actor_mode == "static":
-        return {"verdict": "pass", "detail": "静态横幅，未进入终端仿真"}
-    if guardrail == "model_unconfigured":
-        return {"verdict": "pass", "detail": "未配置大模型，使用确定性伪终端"}
-    if guardrail == "model_error":
-        return {"verdict": "pass", "detail": "大模型不可用，已降级为确定性伪终端"}
-    return {"verdict": "pass", "detail": "确定性伪终端，未调用大模型"}
+        detail = "使用大模型生成终端响应"
+    elif actor_mode == "interpreter":
+        detail = "使用当前主机的虚拟文件与目录状态"
+    elif guardrail == "model_error":
+        detail = "模型暂不可用，使用本地响应"
+    elif guardrail == "model_empty":
+        detail = "模型返回空内容，使用本地响应"
+    elif guardrail == "model_timeout":
+        detail = "模型超过交互等待上限，使用本地响应"
+    else:
+        detail = "使用本地终端响应"
+    return {"verdict": "pass", "detail": detail}
 
 
 def observation_metadata(
@@ -161,7 +158,7 @@ def build_trace_steps(
         },
         {
             "role": "critic",
-            "title": "输出护栏",
+            "title": "响应来源",
             "detail": str(critic.get("detail") or ""),
             "verdict": str(critic.get("verdict") or "pass"),
         },
@@ -210,7 +207,7 @@ def _rationale(
     destructive: bool,
 ) -> str:
     if destructive:
-        return "这是破坏性命令，不安排成功路径，终端只会仿真拒绝。"
+        return "变更命令由当前虚拟主机处理，记录文件状态变化，不切换主机。"
     if category == "lateral_movement" and "credential_access" in seen:
         return f"凭证摸索之后立刻横向，沿 {hop} 展开下一跳诱饵。"
     lines = {

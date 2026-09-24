@@ -1,4 +1,50 @@
-/* ASTHONEY 前端共享层：布局、标签映射、格式化、悬浮提示、鉴权请求 */
+/* ASTHONEY 前端共享层：布局、标签映射、格式化、悬浮提示、请求工具 */
+
+/** Local, dependency-free navigation marks. */
+function navIcon(name) {
+  const paths = {
+    overview: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+    sessions: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m6 9 3 3-3 3m6 0h5"/>',
+    attack: '<path d="M4 4h16v16H4zM4 9h16M4 14h16M9 4v16M14 4v16"/>',
+    profiles: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/>',
+    docs: '<path d="M5 2h9l5 5v15H5zM14 2v6h5M8 12h8M8 16h8"/>',
+  };
+  return `<svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.docs}</svg>`;
+}
+
+/** Native dialog provides focus trapping and Escape cancellation without browser prompts. */
+function appDialog({ title, message, confirm = "确认", danger = false }) {
+  return new Promise((resolve) => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "app-dialog";
+    dialog.innerHTML = `<form method="dialog"><h2>${escapeHtml(title)}</h2>
+      <p>${escapeHtml(message)}</p><div class="dialog-actions">
+      <button class="button" value="cancel">取消</button>
+      <button class="button ${danger ? "danger-ghost" : "primary"}" value="confirm">${escapeHtml(confirm)}</button></div></form>`;
+    document.body.append(dialog);
+    const previous = document.activeElement;
+    dialog.addEventListener("close", () => {
+      const confirmed = dialog.returnValue === "confirm";
+      dialog.remove(); previous?.focus(); resolve(confirmed);
+    }, { once: true });
+    dialog.showModal();
+  });
+}
+
+function toast(message) {
+  document.querySelector(".toast")?.remove();
+  const node = document.createElement("div");
+  node.className = "toast";
+  node.setAttribute("role", "status");
+  node.textContent = message;
+  document.body.append(node);
+  window.setTimeout(() => node.remove(), 4500);
+}
+
+/** Reserved IDs from the built-in rehearsal scripts are labelled, not mistaken for live traffic. */
+function sessionLabel(id) {
+  return /^(theater-|demo-|sec-smoke-|acceptance-)/.test(String(id || "")) ? "演示 / 测试" : "诱捕会话";
+}
 
 /* ---------- 资产类型（分类色，固定槽位，颜色跟随实体） ---------- */
 const ASSET_TYPE_META = {
@@ -53,7 +99,8 @@ function severityClass(value) {
 }
 
 function severityPill(value) {
-  return `<span class="pill ${severityClass(value)}">${escapeHtml(value || "unknown")}</span>`;
+  const label = { critical: "严重", high: "高危", medium: "中危", low: "低危" }[String(value).toLowerCase()] || value || "未知";
+  return `<span class="pill ${severityClass(value)}">${escapeHtml(label)}</span>`;
 }
 
 /* ---------- 基础工具 ---------- */
@@ -105,35 +152,13 @@ async function fetchJSON(url, options) {
   return payload;
 }
 
-/* ---------- 控制面鉴权请求（SR-02） ---------- */
-async function adminFetch(url, options = {}) {
-  let token = localStorage.getItem("adminToken") || "";
-  if (!token) {
-    const input = window.prompt("请输入控制面管理令牌（X-Admin-Token）", "");
-    if (input === null) throw new Error("已取消：需要管理令牌");
-    token = input.trim();
-    localStorage.setItem("adminToken", token);
-  }
-  const headers = { ...(options.headers || {}), "X-Admin-Token": token };
-  const resp = await fetch(url, { ...options, headers });
-  const payload = await resp.json().catch(() => ({}));
-  if (resp.status === 401) {
-    localStorage.removeItem("adminToken");
-    throw new Error("令牌无效，请重试");
-  }
-  if (!resp.ok) {
-    throw new Error(payload.detail || payload.message || `HTTP ${resp.status}`);
-  }
-  return payload;
-}
-
 /* ---------- 导航 ---------- */
 const NAV_ITEMS = [
-  { id: "overview", href: "/", label: "总体态势", badge: "Graph" },
-  { id: "sessions", href: "/sessions/view", label: "SSH 会话", badge: "Replay" },
-  { id: "attack", href: "/attack/view", label: "攻击矩阵", badge: "ATT&CK" },
-  { id: "profiles", href: "/profiles/view", label: "攻击者画像", badge: "Risk" },
-  { id: "docs", href: "/docs", label: "API 文档", badge: "OpenAPI" },
+  { id: "overview", href: "/", label: "总体态势", icon: "overview", badge: "Graph" },
+  { id: "sessions", href: "/sessions/view", label: "SSH 会话", icon: "sessions", badge: "Replay" },
+  { id: "attack", href: "/attack/view", label: "攻击矩阵", icon: "attack", badge: "ATT&CK" },
+  { id: "profiles", href: "/profiles/view", label: "攻击者画像", icon: "profiles", badge: "Risk" },
+  { id: "docs", href: "/docs", label: "API 文档", icon: "docs", badge: "OpenAPI" },
 ];
 
 function renderNav(activePath) {
@@ -141,7 +166,7 @@ function renderNav(activePath) {
   if (!list) return;
   list.innerHTML = NAV_ITEMS.map((item) => `
     <a class="nav-link${item.id === activePath ? " is-active" : ""}" data-nav="${item.id}" href="${item.href}">
-      <span>${item.label}</span><span class="nav-badge">${item.badge}</span>
+      ${navIcon(item.icon)}<span>${item.label}</span><span class="nav-badge">${item.badge}</span>
     </a>
   `).join("");
 }
@@ -190,16 +215,36 @@ function liveEventSummary(event) {
 
 function connectEventStream(onEvent, options = {}) {
   const ignoreHeartbeat = options.ignoreHeartbeat !== false;
+  const reportState = (state) => { document.documentElement.dataset.stream = state; options.onState?.(state); };
+  let reconnectTimer = null;
+  const HEARTBEAT_TIMEOUT = 40000;
   let socket = null;
   let stopped = false;
   let delay = 800;
+  let heartbeatTimer = null;
+
+  const clearHeartbeat = () => {
+    if (heartbeatTimer) {
+      window.clearTimeout(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  };
+  const armHeartbeat = () => {
+    clearHeartbeat();
+    heartbeatTimer = window.setTimeout(() => {
+      if (socket) socket.close();
+    }, HEARTBEAT_TIMEOUT);
+  };
 
   const connect = () => {
     if (stopped) return;
+    reportState("connecting");
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    socket = new WebSocket(`${protocol}://${window.location.host}/ws/events`);
-    socket.onopen = () => { delay = 800; };
-    socket.onmessage = (message) => {
+    const next = new WebSocket(`${protocol}://${window.location.host}/ws/events`);
+    socket = next;
+    next.onopen = () => { delay = 800; armHeartbeat(); reportState("connected"); };
+    next.onmessage = (message) => {
+      armHeartbeat();
       let event;
       try {
         event = JSON.parse(message.data);
@@ -207,17 +252,28 @@ function connectEventStream(onEvent, options = {}) {
         return;
       }
       if (ignoreHeartbeat && event.type === "stream.heartbeat") return;
+      if (event.type === "history.purged") {
+        // Discard panel caches and selections, including in other open tabs.
+        window.setTimeout(() => window.location.reload(), 200);
+        return;
+      }
       onEvent(event);
     };
-    socket.onclose = () => {
+    next.onerror = () => { next.close(); };
+    next.onclose = () => {
+      clearHeartbeat();
+      if (socket === next) socket = null;
       if (stopped) return;
-      window.setTimeout(connect, delay);
+      reportState("reconnecting");
+      reconnectTimer = window.setTimeout(connect, delay);
       delay = Math.min(delay * 1.6, 8000);
     };
   };
   connect();
   return () => {
     stopped = true;
+    window.clearTimeout(reconnectTimer);
+    clearHeartbeat();
     if (socket) socket.close();
   };
 }
@@ -230,6 +286,51 @@ function debounce(fn, wait) {
   };
 }
 
+/* ---------- 轮询：页面隐藏时暂停，在飞请求不重叠 ---------- */
+function startPolling(fn, interval) {
+  let inFlight = false;
+  const tick = async () => {
+    if (document.hidden || inFlight) return;
+    inFlight = true;
+    try {
+      await fn();
+    } finally {
+      inFlight = false;
+    }
+  };
+  tick();
+  const timer = window.setInterval(tick, interval);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) tick();
+  });
+  return () => window.clearInterval(timer);
+}
+
+/* ---------- 内联错误条（带重试） ---------- */
+function showInlineError(container, onRetry) {
+  if (!container) return;
+  if (container.querySelector(":scope > .error-bar")) return;
+  const bar = document.createElement("div");
+  bar.className = "error-bar";
+  const text = document.createElement("span");
+  text.textContent = "数据加载失败，请检查控制面连接。";
+  const retry = document.createElement("button");
+  retry.className = "link-button small";
+  retry.type = "button";
+  retry.textContent = "重试";
+  retry.addEventListener("click", () => {
+    bar.remove();
+    onRetry();
+  });
+  bar.append(text, retry);
+  container.prepend(bar);
+}
+
+function clearInlineError(container) {
+  const bar = container && container.querySelector(":scope > .error-bar");
+  if (bar) bar.remove();
+}
+
 function riskBandMeta(band) {
   const normalized = String(band || "low").toLowerCase();
   if (normalized === "critical") return { label: "严重", severity: "critical" };
@@ -240,14 +341,29 @@ function riskBandMeta(band) {
 
 /* ---------- 布局与侧栏状态 ---------- */
 function initLayout(activePath) {
+  document.documentElement.removeAttribute("data-theme");
+  localStorage.removeItem("theme");
   const appShell = document.querySelector(".app-shell");
   const toggle = document.querySelector("[data-sidebar-toggle]");
+  const sidebar = document.querySelector(".sidebar");
   renderNav(activePath);
   document.querySelectorAll("[data-nav]").forEach((link) => {
     if (link.getAttribute("data-nav") === activePath) link.classList.add("is-active");
   });
   if (toggle && appShell) {
-    toggle.addEventListener("click", () => appShell.classList.toggle("sidebar-open"));
+    toggle.setAttribute("aria-expanded", "false");
+    const setOpen = (open) => {
+      appShell.classList.toggle("sidebar-open", open);
+      toggle.setAttribute("aria-expanded", String(open));
+    };
+    toggle.addEventListener("click", () => setOpen(!appShell.classList.contains("sidebar-open")));
+    const mask = document.createElement("div");
+    mask.className = "sidebar-mask";
+    mask.addEventListener("click", () => setOpen(false));
+    appShell.appendChild(mask);
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && appShell.classList.contains("sidebar-open")) setOpen(false);
+    });
   }
   const shellStatusEl = document.getElementById("shellStatus");
   const healthDotEl = document.getElementById("healthDot");
@@ -276,8 +392,7 @@ function initLayout(activePath) {
         }
       }
     };
-    refreshShell();
-    setInterval(refreshShell, 10000);
+    startPolling(refreshShell, 10000);
   }
 }
 
@@ -310,6 +425,18 @@ function initTooltip(container) {
     if (tip.style.display === "block") move(event);
   });
   container.addEventListener("pointerout", (event) => {
+    const target = event.target.closest("[data-tip]");
+    if (target) tip.style.display = "none";
+  });
+  container.addEventListener("focusin", (event) => {
+    const target = event.target.closest("[data-tip]");
+    if (!target || !container.contains(target)) return;
+    tip.innerHTML = target.getAttribute("data-tip");
+    tip.style.display = "block";
+    const rect = target.getBoundingClientRect();
+    move({ clientX: rect.left + rect.width / 2, clientY: rect.bottom });
+  });
+  container.addEventListener("focusout", (event) => {
     const target = event.target.closest("[data-tip]");
     if (target) tip.style.display = "none";
   });

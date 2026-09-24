@@ -1,0 +1,12 @@
+{
+  "description": "仿真攻击链。所有内部主机与凭据均为诱饵，不执行宿主机命令。",
+  "commands": [
+    "whoami",
+    "ls /srv",
+    "cat /etc/passwd",
+    "cat /srv/backup/db.env",
+    "ssh admin@10.0.5.2",
+    "cat /srv/backup/db.env",
+    "ssh svc-backup@10.0.5.104"
+  ]
+}

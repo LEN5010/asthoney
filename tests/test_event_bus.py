@@ -38,3 +38,15 @@ def test_slow_subscriber_drops_oldest_instead_of_blocking():
         await bus.unsubscribe(queue)
 
     asyncio.run(scenario())
+
+
+def test_publish_nowait_holds_task_reference_until_done():
+    async def scenario() -> None:
+        bus = EventBus()
+        bus.publish_nowait("alert.raised", {"severity": "high"})
+        assert len(bus._background_tasks) == 1
+        await asyncio.sleep(0.05)
+        assert len(bus._background_tasks) == 0
+        assert bus.replay_buffer()[-1]["type"] == "alert.raised"
+
+    asyncio.run(scenario())

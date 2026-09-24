@@ -1,0 +1,30 @@
+第14组干净目录复现
+独立 Compose 项目：asthoney-releasecheck
+初次发现镜像遗漏 .env.example，已修正并复测。
+
+.....................................................................    [100%]
+=============================== warnings summary ===============================
+../usr/local/lib/python3.11/site-packages/fastapi/testclient.py:1
+  /usr/local/lib/python3.11/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+69 passed, 1 warning in 1.79s
+PASS whoami
+PASS ls /srv
+PASS cat /etc/passwd
+PASS cat /srv/backup/db.env
+PASS ssh admin@10.0.5.2
+PASS cat /srv/backup/db.env
+PASS ssh svc-backup@10.0.5.104
+PASS MCP 陷阱、会话回放、动态拓扑、矩阵和画像
+演示完成：http://127.0.0.1:8000/session/view?session_id=demo-ssh-01
+[PASS] ST-01 未授权模拟请求被拒绝
+[PASS] ST-02 错误令牌清理被拒绝
+[PASS] ST-03 清理必须二次确认
+[PASS] ST-04 超长输入后服务仍正常
+[PASS] ST-05 危险命令仅仿真拒绝
+[PASS] ST-06 MCP 陷阱拒绝并记录
+[PASS] ST-07 真实 SSH 控制字符消毒
+[PASS] ST-08 提交源文件不含 API 密钥
+安全冒烟结果: PASS=8 FAIL=0

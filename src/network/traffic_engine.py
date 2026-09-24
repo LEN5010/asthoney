@@ -29,6 +29,8 @@ class TrafficEngine:
         self.ssh_acceptors: list[asyncssh.SSHAcceptor] = []
         self.ssh_material: dict[str, Any] | None = None
         self.active_connection_count = 0
+        self.ssh_connections: set[asyncssh.SSHServerConnection] = set()
+        self.client_tasks: set[asyncio.Task] = set()
 
     async def start(self) -> None:
         protocols = self.settings.honeypot_protocol_list
@@ -58,24 +60,22 @@ class TrafficEngine:
         if self.ssh_material is None:
             self.ssh_material = ensure_ssh_material(key_dir())
         material = self.ssh_material
-        username = SSH_USERNAME
-        password = self.settings.honeypot_ssh_password
-        lure_public = material["lure_public"]
+        def connection_changed(delta: int) -> None:
+            self.active_connection_count = max(0, self.active_connection_count + delta)
 
         def server_factory() -> HoneypotSSHServer:
-            return HoneypotSSHServer(username=username, password=password, lure_public=lure_public)
+            return HoneypotSSHServer(main_agent=self.main_agent,
+                initial_prompt=self.settings.honeypot_write_prompt,
+                connection_changed=connection_changed, connections=self.ssh_connections)
 
         async def process_factory(process: asyncssh.SSHServerProcess) -> None:
-            self.active_connection_count += 1
+            task = asyncio.current_task()
+            self.client_tasks.add(task)
             try:
-                await serve_ssh_process(
-                    process,
-                    main_agent=self.main_agent,
-                    destination_port=port,
-                    initial_prompt=self.settings.honeypot_write_prompt,
-                )
+                await serve_ssh_process(process, main_agent=self.main_agent,
+                    destination_port=port, initial_prompt=self.settings.honeypot_write_prompt)
             finally:
-                self.active_connection_count = max(0, self.active_connection_count - 1)
+                self.client_tasks.discard(task)
 
         return await asyncssh.create_server(
             server_factory,
@@ -88,23 +88,32 @@ class TrafficEngine:
         )
 
     async def stop(self) -> None:
-        for server in self.servers:
+        listeners = [*self.servers, *self.ssh_acceptors]
+        for server in listeners:
             server.close()
-            await server.wait_closed()
         self.servers.clear()
-        for acceptor in self.ssh_acceptors:
-            acceptor.close()
-            await acceptor.wait_closed()
         self.ssh_acceptors.clear()
+        # Reset stops existing producers before deleting their audit records.
+        connections = list(self.ssh_connections)
+        for connection in connections:
+            connection.close()
+        tasks = list(self.client_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*(connection.wait_closed() for connection in connections), return_exceptions=True)
+        # Python 3.13+ Server.wait_closed also waits for accepted transports.
+        # Close clients first, otherwise an idle SSH connection prevents reset.
+        await asyncio.gather(*(server.wait_closed() for server in listeners))
+        self.ssh_connections.clear()
+        self.active_connection_count = 0
 
     def ssh_public_status(self) -> dict[str, Any]:
         material = self.ssh_material or {}
-        lure_path = material.get("lure_private_key")
         return {
             "ssh_username": SSH_USERNAME,
             "ssh_host_fingerprint": material.get("host_fingerprint"),
-            "ssh_lure_private_key": str(lure_path) if lure_path else None,
-            "ssh_password_login": bool(self.settings.honeypot_ssh_password),
+            "ssh_authentication": "none",
         }
 
     async def _handle_client(
@@ -124,6 +133,8 @@ class TrafficEngine:
         prompt_locked = False
         entry_blank_prompt_rendered = True
         self.active_connection_count += 1
+        task = asyncio.current_task()
+        self.client_tasks.add(task)
 
         self.logger.info(
             "Accepted %s session %s from %s to port %s",
@@ -134,15 +145,7 @@ class TrafficEngine:
         )
 
         try:
-            if protocol == "ssh":
-                await self._write_line(writer, self.settings.honeypot_ssh_banner)
-                client_banner = await self._safe_readline(reader)
-                if client_banner:
-                    self.logger.debug("Client %s banner: %s", source_ip, client_banner.strip())
-                await self._write_raw(writer, b"Authorized access only.\r\n")
-                await self._write_raw(writer, active_prompt.encode("utf-8"))
-            else:
-                await self._write_line(writer, "220 maze-tcp edge ready")
+            await self._write_line(writer, "220 maze-tcp edge ready")
 
             while not reader.at_eof():
                 raw = await self._safe_readline(reader)
@@ -185,6 +188,7 @@ class TrafficEngine:
         except Exception:
             self.logger.exception("Unhandled error in session %s", session_id)
         finally:
+            self.client_tasks.discard(task)
             if close_after_write:
                 with suppress(ConnectionResetError):
                     await writer.drain()

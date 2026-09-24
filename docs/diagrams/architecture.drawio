@@ -1,0 +1,64 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mxfile host="app.diagrams.net">
+  <diagram name="architecture" id="architecture">
+    <mxGraphModel page="0" pageWidth="1000" pageHeight="500">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="2" value="诱捕入口&#10;SSH 2222 / TCP 2323" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F9FC;strokeColor=#8B9DB2;fontColor=#172638;fontFamily=PingFang SC;fontSize=17;spacing=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="20" y="20" width="240" height="80" />
+        </mxCell>
+        <mxCell id="3" value="MainAgent&#10;分析 · 规划 · 路由 · 记录" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F9FC;strokeColor=#8B9DB2;fontColor=#172638;fontFamily=PingFang SC;fontSize=17;spacing=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="340" y="20" width="280" height="80" />
+        </mxCell>
+        <mxCell id="4" value="SubAgent&#10;会话世界 / 可选大模型" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F9FC;strokeColor=#8B9DB2;fontColor=#172638;fontFamily=PingFang SC;fontSize=17;spacing=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="700" y="20" width="270" height="80" />
+        </mxCell>
+        <mxCell id="5" value="MCP 工具诱饵&#10;REST / JSON-RPC" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F9FC;strokeColor=#8B9DB2;fontColor=#172638;fontFamily=PingFang SC;fontSize=17;spacing=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="20" y="200" width="240" height="80" />
+        </mxCell>
+        <mxCell id="6" value="Neo4j 全局状态图&#10;会话 · 资产 · 意图 · 告警" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F9FC;strokeColor=#8B9DB2;fontColor=#172638;fontFamily=PingFang SC;fontSize=17;spacing=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="340" y="200" width="280" height="80" />
+        </mxCell>
+        <mxCell id="7" value="FastAPI + EventBus&#10;REST 查询 / WebSocket 推送" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F9FC;strokeColor=#8B9DB2;fontColor=#172638;fontFamily=PingFang SC;fontSize=17;spacing=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="700" y="200" width="270" height="80" />
+        </mxCell>
+        <mxCell id="8" value="浅色安全运营工作台&#10;拓扑 · 回放 · 矩阵 · 画像" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F9FC;strokeColor=#8B9DB2;fontColor=#172638;fontFamily=PingFang SC;fontSize=17;spacing=12;" vertex="1" parent="1">
+          <mxGeometry as="geometry" x="700" y="380" width="270" height="80" />
+        </mxCell>
+        <mxCell id="e0" value="消毒后的命令" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#536F91;fontColor=#47566A;fontFamily=PingFang SC;fontSize=13;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="2" target="3">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="e1" value="仿真请求" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#536F91;fontColor=#47566A;fontFamily=PingFang SC;fontSize=13;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="3" target="4">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="e2" value="工具命中" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#536F91;fontColor=#47566A;fontFamily=PingFang SC;fontSize=13;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0.2;entryY=1;" edge="1" parent="1" source="5" target="3">
+          <mxGeometry as="geometry" relative="1">
+            <Array as="points">
+              <mxPoint x="300" y="240" />
+              <mxPoint x="300" y="140" />
+              <mxPoint x="396" y="140" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e3" value="审计与世界快照" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#536F91;fontColor=#47566A;fontFamily=PingFang SC;fontSize=13;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="3" target="6">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="e4" value="查询结果" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#536F91;fontColor=#47566A;fontFamily=PingFang SC;fontSize=13;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="6" target="7">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="e5" value="HTTP / 实时事件" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#536F91;fontColor=#47566A;fontFamily=PingFang SC;fontSize=13;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="7" target="8">
+          <mxGeometry as="geometry" relative="1" />
+        </mxCell>
+        <mxCell id="e6" value="实时事件" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#536F91;fontColor=#47566A;fontFamily=PingFang SC;fontSize=13;labelBackgroundColor=#FFFFFF;exitX=0.8;exitY=1;entryX=0.3;entryY=0;" edge="1" parent="1" source="3" target="7">
+          <mxGeometry as="geometry" relative="1">
+            <Array as="points">
+              <mxPoint x="564" y="140" />
+              <mxPoint x="781" y="140" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

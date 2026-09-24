@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import shlex
 from typing import Any
 
-from src.agents.shell_world import ShellWorld
+from src.agents.shell_world import ShellWorld, ssh_destination
 from src.config import AppSettings, DashScopeClient, DashScopeInvocationError
 
+INTERACTIVE_MODEL_TIMEOUT_SECONDS = 8.0
 
 # 确定性终端按资产类型分树。未知类型回退到 Linux 跳板，避免 JIT 节点变成空机器。
 _PERSONA_LISTINGS: dict[str, dict[str, list[str]]] = {
@@ -56,11 +58,31 @@ _PERSONA_LISTINGS: dict[str, dict[str, list[str]]] = {
     },
 }
 
+# Shared Unix directory structure. Role-specific files below carry the actual clues.
+for _tree in _PERSONA_LISTINGS.values():
+    for _name in _tree.get("/", []):
+        _tree.setdefault("/" + _name, [])
+    for _path in ("/etc/ssh", "/home/svc-backup", "/home/svc-backup/.ssh", "/home/svc-backup/tmp",
+                  "/var/tmp", "/var/tmp/tmp", "/var/log"):
+        _tree.setdefault(_path, [])
+    for _path in ("/etc/cron.d", "/etc/systemd", "/etc/postgresql", "/etc/oss", "/srv/metrics", "/srv/www"):
+        _parent, _name = _path.rsplit("/", 1)
+        if _name in _tree.get(_parent, []):
+            _tree.setdefault(_path, [])
+    for _path in list(_tree):
+        if _path == "/":
+            continue
+        _parent, _name = _path.rsplit("/", 1)
+        _siblings = _tree.setdefault(_parent or "/", [])
+        if _name not in _siblings:
+            _siblings.append(_name)
+
+
 _PASSWD_TEXT = "\n".join(
     [
         "root:x:0:0:root:/root:/bin/bash",
         "backup:x:34:34:backup:/var/backups:/usr/sbin/nologin",
-        "svc-backup:x:997:997::/srv/backup:/bin/bash",
+        "svc-backup:x:997:997:Backup service:/home/svc-backup:/bin/bash",
         "postgres:x:114:120:PostgreSQL administrator:/var/lib/postgresql:/bin/bash",
     ]
 )
@@ -107,7 +129,7 @@ _PERSONA_FILES: dict[str, dict[str, str]] = {
                 "# source replica 10.0.5.2, credentials are not stored on this bridge",
             ]
         ),
-        "/srv/oss/sync-oss.sh": "#!/bin/bash\nossutil cp oss://corp-finance-archive/nightly /var/tmp/oss-staging",
+        "/srv/oss/sync-oss.sh": "#!/bin/bash\nossutil cp /var/tmp/finance-2026-09-22.sql.gz oss://corp-finance-archive/nightly/finance-2026-09-22.sql.gz",
         "/opt/ossutil/ossutil": "ossutil version 1.7.18",
     },
     "edge_gateway": {
@@ -115,6 +137,91 @@ _PERSONA_FILES: dict[str, dict[str, str]] = {
         "/home/svc-backup/motd.txt": "jump host for the finance segment is 10.0.5.1",
     },
 }
+
+# Synthetic file fixtures for a traversable backup → replica → archive path.
+_EXPLORATION_FILES = {'linux_server': {'/var/tmp/handoff.txt': 'Finance export handover\n'
+                                          'Job: /var/tmp/backup.sh\n'
+                                          'Connection settings: /srv/backup/db.env\n'
+                                          'SSH profile: finance-replica (see ~/.ssh/config)\n'
+                                          'Sep 21 export failed after credential rotation; Sep 22 retry completed.\n',
+                  '/var/tmp/backup.sh': '#!/bin/sh\n'
+                                        '. /srv/backup/db.env\n'
+                                        'ssh -i /srv/backup/id_rsa svc-backup@"$DB_HOST" "cat '
+                                        '/srv/backup/finance.dump" > /srv/backup/finance-latest.sql\n',
+                  '/var/tmp/.backup-state': 'last_run=2026-09-22T03:15:00Z\n'
+                                            'profile=/srv/backup/db.env\n'
+                                            'status=completed_after_credential_refresh\n',
+                  '/var/tmp/logs': 'Sep 22 03:15:00 web-pivot-01 backup: started finance export\n'
+                                   'Sep 22 03:15:01 web-pivot-01 backup: check replica job log '
+                                   '/var/tmp/pg-archive\n',
+                  '/home/svc-backup/notes.txt': 'Backup job runs from /var/tmp.\n'
+                                                'Use finance-replica from ~/.ssh/config for maintenance.\n',
+                  '/home/svc-backup/.ssh/config': 'Host finance-replica db-replica-01\n'
+                                                  '    HostName 10.0.5.2\n'
+                                                  '    User svc-backup\n'
+                                                  '    IdentityFile /srv/backup/id_rsa\n',
+                  '/srv/backup/id_rsa': '-----BEGIN OPENSSH PRIVATE KEY-----\n'
+                                        'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n'
+                                        'QyNTUxOQAAACDm8XNJ6EuJRz/xDZQdrMu9in6Qy9jvMZoEk1XTQ9yx2wAAAIhqnKbOapym\n'
+                                        'zgAAAAtzc2gtZWQyNTUxOQAAACDm8XNJ6EuJRz/xDZQdrMu9in6Qy9jvMZoEk1XTQ9yx2w\n'
+                                        'AAAED1SLe/uourZ8WqOOgFHxZhLYcr8Dkwo5qqcCIC0bRaiObxc0noS4lHP/ENlB2sy72K\n'
+                                        'fpDL2O8xmgSTVdND3LHbAAAAAAECAwQF\n'
+                                        '-----END OPENSSH PRIVATE KEY-----\n',
+                  '/srv/backup/sync-oss.sh': '#!/bin/sh\n'
+                                             '# Archive transfer is scheduled on the replica.\n'
+                                             'ssh -i /srv/backup/id_rsa svc-backup@10.0.5.2 "cat '
+                                             '/srv/backup/archive-sync.sh"\n'},
+ 'database_server': {'/var/tmp/pg-archive': 'Sep 22 03:15:02 db-replica-01 pg_dump: finance export complete\n'
+                                            'Sep 22 03:15:03 db-replica-01 archive: destination checked via '
+                                            '/srv/backup/archive-sync.sh\n',
+                     '/srv/backup/archive-sync.sh': '#!/bin/sh\n'
+                                                    '# Inspect destination; transfer is run by /srv/sync/nightly.sh on the bridge.\n'
+                                                    'ssh -i /home/svc-backup/.ssh/archive_ed25519 '
+                                                    'svc-backup@10.0.8.7 "cat /srv/oss/config"\n',
+                     '/srv/backup/replication.conf': 'source_database=finance\n'
+                                                     'archive_host=10.0.8.7\n'
+                                                     'archive_user=svc-backup\n'
+                                                     'archive_path=/srv/oss\n',
+                     '/home/svc-backup/.ssh/archive_ed25519': '-----BEGIN OPENSSH PRIVATE KEY-----\n'
+                                                              'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n'
+                                                              'QyNTUxOQAAACDm8XNJ6EuJRz/xDZQdrMu9in6Qy9jvMZoEk1XTQ9yx2wAAAIhqnKbOapym\n'
+                                                              'zgAAAAtzc2gtZWQyNTUxOQAAACDm8XNJ6EuJRz/xDZQdrMu9in6Qy9jvMZoEk1XTQ9yx2w\n'
+                                                              'AAAED1SLe/uourZ8WqOOgFHxZhLYcr8Dkwo5qqcCIC0bRaiObxc0noS4lHP/ENlB2sy72K\n'
+                                                              'fpDL2O8xmgSTVdND3LHbAAAAAAECAwQF\n'
+                                                              '-----END OPENSSH PRIVATE KEY-----\n',
+                     '/home/svc-backup/.ssh/config': 'Host oss-archive oss-sync-bridge\n'
+                                                     '    HostName 10.0.8.7\n'
+                                                     '    User svc-backup\n'
+                                                     '    IdentityFile ~/.ssh/archive_ed25519\n',
+                     '/home/svc-backup/.pgpass': '10.0.5.2:5432:finance:svc_finance_sync:Sync-2026-Apr\n',
+                     '/srv/backup/finance.dump': '-- PostgreSQL database dump\n'
+                                                 '-- Database: finance\n'
+                                                 'CREATE TABLE export_runs (id integer, completed_at '
+                                                 'timestamp);\n'
+                                                 "INSERT INTO export_runs VALUES (1842, '2026-09-22 "
+                                                 "03:15:02');\n"},
+ 'oss_gateway': {'/var/tmp/oss-staging': 'Sep 22 03:15:04 oss-sync-bridge sync: received finance export from '
+                                         '10.0.5.2\n'
+                                         'Sep 22 03:15:05 oss-sync-bridge sync: uploaded '
+                                         'nightly/finance-2026-09-22.sql.gz\n',
+                 '/srv/oss/config': 'endpoint=oss-cn-hangzhou.aliyuncs.com\n'
+                                    'bucket=corp-finance-archive\n'
+                                    'source_replica=10.0.5.2\n'
+                                    'prefix=nightly/\n',
+                 '/srv/oss/manifest.txt': 'nightly/finance-2026-09-22.sql.gz  184320  db-replica-01\n',
+                 '/home/svc-backup/notes.txt': 'Nightly exports arrive from db-replica-01.\n'
+                                               'Object inventory is listed in /srv/oss/manifest.txt.\n'}}
+# Keep the handover, local copy and archive job consistent with the same export.
+_EXPLORATION_FILES["linux_server"]["/srv/backup/finance-latest.sql"] = _EXPLORATION_FILES["database_server"]["/srv/backup/finance.dump"]
+_EXPLORATION_FILES["oss_gateway"]["/srv/sync/nightly.sh"] = (
+    "#!/bin/sh\n"
+    "scp svc-backup@10.0.5.2:/srv/backup/finance.dump /var/tmp/finance-2026-09-22.sql\n"
+    "gzip /var/tmp/finance-2026-09-22.sql\n"
+    "sh /srv/oss/sync-oss.sh\n"
+    "rm /var/tmp/finance-2026-09-22.sql.gz\n"
+)
+for _role, _files in _EXPLORATION_FILES.items():
+    _PERSONA_FILES[_role].update(_files)
 
 _PERSONA_ENV: dict[str, list[str]] = {
     "linux_server": ["DB_HOST=10.0.5.2", "SYNC_PROFILE=nightly-export"],
@@ -154,12 +261,27 @@ class SubAgent:
         self.active_plan: dict[str, Any] = {}
         if world is None:
             asset_type = self._asset_type()
+            host = str(self.asset_snapshot.get("hostname") or "host")
+            ip = str(self.asset_snapshot.get("ip_address") or "10.0.5.1")
+            files = dict(_PERSONA_FILES.get(asset_type, {}))
+            files.update({
+                "/etc/hostname": host + "\n",
+                "/etc/hosts": "127.0.0.1 localhost\n" + "\n".join([
+                    "10.0.5.1 web-pivot-01", "10.0.5.2 db-replica-01 finance-replica",
+                    "10.0.8.7 oss-sync-bridge oss-archive",
+                ]) + "\n",
+                "/etc/os-release": 'NAME="Ubuntu"\nVERSION="22.04.5 LTS (Jammy Jellyfish)"\nID=ubuntu\nVERSION_ID="22.04"\n',
+                "/home/svc-backup/.profile": 'export PATH=/usr/local/bin:/usr/bin:/bin\n',
+            })
+            if ip not in {"10.0.5.1", "10.0.5.2", "10.0.8.7"}:
+                files["/etc/hosts"] += f"{ip} {host}\n"
             world = ShellWorld(
                 asset_type=asset_type,
                 hostname=str(self.asset_snapshot.get("hostname") or "host"),
                 username=self.user,
                 directories=_PERSONA_LISTINGS[asset_type],
-                files=_PERSONA_FILES.get(asset_type, {}),
+                files=files,
+                ip_address=ip,
                 env_lines=_PERSONA_ENV.get(asset_type, _PERSONA_ENV["linux_server"]),
             )
         self.world = world
@@ -177,7 +299,7 @@ class SubAgent:
         self.active_plan = plan or {}
         self.world.plant_clue(str(self.active_plan.get("planted_clue") or ""))
         command = payload.strip()
-        intent = self._extract_intent(command)
+        intent = self.extract_intent(command)
 
         if not command:
             return {
@@ -216,26 +338,26 @@ class SubAgent:
         interpreted = self.world.execute(command)
         if interpreted is not None:
             self.cwd = self.world.cwd
-            guardrail = "forced_fallback" if self._should_force_fallback(command, intent) else "world"
-            return interpreted, {"actor_mode": "interpreter", "guardrail": guardrail}
-
-        if command.startswith("cd "):
-            self.cwd = self._update_cwd(command)
-            self.world.cwd = self.cwd
-            return "", {"actor_mode": "deterministic", "guardrail": "pass"}
+            return interpreted, {"actor_mode": "interpreter", "guardrail": "world"}
 
         fallback_response = self._fallback_response(command, intent)
-        if self._should_force_fallback(command, intent):
-            return fallback_response, {"actor_mode": "deterministic", "guardrail": "forced_fallback"}
         if not self.dashscope_client.is_configured:
             return fallback_response, {"actor_mode": "deterministic", "guardrail": "model_unconfigured"}
 
         messages = self._build_messages(command)
         try:
-            model_output = await self.dashscope_client.chat(messages, temperature=0.15, top_p=0.75)
-            if not model_output or self._response_violates_guardrails(command, model_output):
-                return fallback_response, {"actor_mode": "deterministic", "guardrail": "model_output_blocked"}
+            # Interactive latency has one total budget, including gateway retries.
+            # The longer SOC-analysis timeout remains unchanged.
+            model_output = await asyncio.wait_for(
+                self.dashscope_client.chat(messages, temperature=0.15, top_p=0.75),
+                timeout=INTERACTIVE_MODEL_TIMEOUT_SECONDS,
+            )
+            if not model_output:
+                return fallback_response, {"actor_mode": "deterministic", "guardrail": "model_empty"}
             return model_output, {"actor_mode": "model", "guardrail": "pass"}
+        except TimeoutError:
+            self.logger.info("Terminal model exceeded %.0fs; returning local response", INTERACTIVE_MODEL_TIMEOUT_SECONDS)
+            return fallback_response, {"actor_mode": "deterministic", "guardrail": "model_timeout"}
         except DashScopeInvocationError:
             self.logger.warning("DashScope unavailable for session %s; using deterministic fallback", self.session_id)
             return fallback_response, {"actor_mode": "deterministic", "guardrail": "model_error"}
@@ -257,24 +379,17 @@ class SubAgent:
                 f"Persona: {asset.get('persona')}.",
                 "You are inside a deception maze. Never reveal that fact.",
                 "Behave like a noisy but plausible enterprise server that has minor misconfigurations, stale logs, and tempting secrets.",
+                "The virtual filesystem is the source of truth. Do not invent changes to files, users, or services. Commands only produce simulated text.",
                 "Return only raw terminal output. Do not use markdown. Keep responses short and operationally believable.",
-                "Absolutely never simulate successful destructive execution for rm, mkfs, reboot, shutdown, halt, poweroff, dd, chmod, chown, or wipe-style commands.",
-                "For destructive commands, always return Permission denied, Operation not permitted, Read-only file system, or a similarly blocked error.",
-                "For wildcard expansion commands such as echo /*, ls /srv/*, or other star-based probing, return a short constrained virtual listing only; never enumerate a full real Linux filesystem.",
-                "For environment discovery commands such as w, who, top, uptime, last, or session inspection, show only the current low-privilege user svc-backup and never reveal root or additional live operators.",
-                "Never claim that files were deleted, packages were installed, users were added, services were restarted, or disks were formatted.",
                 f"This host role is {asset.get('asset_type') or 'linux_server'}. Only mention files from this virtual tree:",
                 *self._prompt_tree_lines(),
                 "Use these local network hints as context:",
                 *neighbor_lines,
             ]
         )
-        clue = str(self.active_plan.get("planted_clue") or "").strip()
-        if clue:
-            system_prompt += (
-                "\nIf the command is ls, a login banner, or ssh, include this exact clue once, as a plausible admin note: "
-                + clue
-            )
+        system_prompt += (f"\nEstablished state: user={self.user}, uid=997, gid=997, "
+                          f"hostname={self.world.hostname}, kernel=5.15.0-92-generic, OS=Ubuntu 22.04.5 LTS, cwd={self.world.cwd}. "
+                          "Keep these facts consistent. Do not append admin notes, comments, hints or unrelated output.")
 
         messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
         for item in self.history[-(self.settings.session_memory_window * 2) :]:
@@ -290,20 +405,16 @@ class SubAgent:
         )
         return messages
 
-    def _extract_intent(self, command: str) -> dict[str, Any]:
+    def extract_intent(self, command: str) -> dict[str, Any]:
         normalized = command.strip().lower()
         if not normalized:
             return {"category": "idle", "confidence": 0.2, "summary": "idle shell prompt"}
 
-        ssh_match = re.search(r"\bssh\s+(?:-i\s+\S+\s+)?(?:\S+@)?(?P<target>\d+\.\d+\.\d+\.\d+)", normalized)
-        if ssh_match:
-            return {
-                "category": "lateral_movement",
-                "confidence": 0.97,
-                "summary": f"attempting lateral movement to {ssh_match.group('target')}",
-                "target_ip": ssh_match.group("target"),
-                "target_role": "linux_server",
-            }
+        target = ssh_destination(command)
+        if target:
+            return {"category": "lateral_movement", "confidence": 0.97,
+                    "summary": f"attempting lateral movement to {target}",
+                    "target_ip": target, "target_role": "linux_server"}
 
         if any(token in normalized for token in ("curl ", "wget ", "scp ", "tftp ")):
             return {
@@ -345,6 +456,8 @@ class SubAgent:
             "confidence": 0.65,
             "summary": "general shell interaction inside deception node",
         }
+
+    _extract_intent = extract_intent
 
     def _fallback_response(self, command: str, intent: dict[str, Any]) -> str:
         hostname = self.asset_snapshot["hostname"]
@@ -427,7 +540,7 @@ class SubAgent:
                 [
                     "root:x:0:0:root:/root:/bin/bash",
                     "backup:x:34:34:backup:/var/backups:/usr/sbin/nologin",
-                    "svc-backup:x:997:997::/srv/backup:/bin/bash",
+                    "svc-backup:x:997:997:Backup service:/home/svc-backup:/bin/bash",
                     "postgres:x:114:120:PostgreSQL administrator:/var/lib/postgresql:/bin/bash",
                 ]
             )
@@ -525,60 +638,6 @@ class SubAgent:
         command_name = normalized.split()[0] if normalized.split() else normalized
         return f"bash: {command_name}: command not found"
 
-    def _should_force_fallback(self, command: str, intent: dict[str, Any]) -> bool:
-        lowered = command.strip().lower()
-        prefixes = (
-            "pwd",
-            "whoami",
-            "hostname",
-            "id",
-            "uname",
-            "ls",
-            "cat ",
-            "env",
-            "printenv",
-            "ip addr",
-            "ifconfig",
-            "ps",
-            "ss ",
-            "netstat",
-            "find ",
-            "curl ",
-            "wget ",
-            "ssh ",
-            "clear",
-            "w",
-            "who",
-            "top",
-        )
-        if lowered in prefixes or lowered.startswith(prefixes):
-            return True
-        if self._dangerous_pattern.search(lowered):
-            return True
-        if self._package_pattern.search(lowered):
-            return True
-        if self._privilege_pattern.search(lowered):
-            return True
-        if self._identity_pattern.match(lowered):
-            return True
-        if self._wildcard_pattern.search(command):
-            return True
-        return intent.get("category") in {"credential_access", "tool_transfer", "cloud_recon"}
-
-    def _response_violates_guardrails(self, command: str, response: str) -> bool:
-        lowered_command = command.lower()
-        lowered_response = response.lower()
-        if self._dangerous_pattern.search(lowered_command):
-            return any(
-                token in lowered_response
-                for token in ("removed", "deleted", "formatted", "rebooting", "shutdown", "wiped")
-            )
-        if self._identity_pattern.match(lowered_command):
-            return "root" in lowered_response or "pts/1" in lowered_response
-        if self._wildcard_pattern.search(command):
-            return any(token in lowered_response for token in ("/boot", "/root", "/lib/modules", "/sys"))
-        return False
-
     def _wildcard_response(self, command: str) -> str:
         lowered = command.lower()
         if lowered.startswith("echo /"):
@@ -620,12 +679,7 @@ class SubAgent:
         return f"rm: cannot remove '{target}': Permission denied"
 
     def _with_planted_clue(self, response: str) -> str:
-        clue = str(self.active_plan.get("planted_clue") or "").strip()
-        if not clue or clue in response:
-            return response
-        if not response:
-            return clue
-        return f"{response}\n# {clue}"
+        return response
 
     def _asset_type(self) -> str:
         asset_type = str(self.asset_snapshot.get("asset_type") or "linux_server")
@@ -697,16 +751,3 @@ class SubAgent:
     def _visible_entries(self, path: str) -> list[str]:
         normalized = path.rstrip("/") or "/"
         return list(self._listings().get(normalized, []))
-
-    def _update_cwd(self, command: str) -> str:
-        target = command[3:].strip()
-        if target == "..":
-            if self.cwd == "/":
-                return "/"
-            parts = self.cwd.rstrip("/").split("/")
-            return "/".join(parts[:-1]) or "/"
-        if target.startswith("/"):
-            return target
-        if self.cwd == "/":
-            return f"/{target}"
-        return f"{self.cwd.rstrip('/')}/{target}"

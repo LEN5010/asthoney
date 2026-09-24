@@ -5,21 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>攻击者画像 · ASTHONEY 欺骗蜜网</title>
   <link rel="stylesheet" href="/static/app.css">
-  <style>
-    .profiles-table .table-head,
-    .profiles-table .table-row {
-      grid-template-columns: 1.1fr 0.7fr 0.5fr 0.5fr 1.4fr 0.7fr 0.7fr;
-    }
-  </style>
 </head>
-<body>
+<body data-page="profiles">
   <div class="app-shell">
     <header class="topbar">
       <div class="topbar-left">
         <button class="sidebar-toggle" data-sidebar-toggle>菜单</button>
-        <a class="brand" href="/"><span class="brand-mark"></span>ASTHONEY<span class="brand-sub">生成式欺骗蜜网</span></a>
+        <a class="brand" href="/"><span class="brand-mark"></span>ASTHONEY<span class="brand-sub">欺骗防御工作台</span></a>
       </div>
-      <div class="topbar-right">
+      <div class="topbar-right"><span class="environment-label">课程实验环境 · 模拟处置</span>
         <span class="topbar-meta" id="lastUpdated">等待同步</span>
         <span class="health-dot" id="healthDot">检测中</span>
       </div>
@@ -28,7 +22,7 @@
     <div class="workspace">
       <aside class="sidebar">
         <div class="sidebar-group">
-          <div class="sidebar-label">导航</div>
+          <div class="sidebar-label">工作空间</div>
           <nav class="nav-list"></nav>
         </div>
         <div class="sidebar-group">
@@ -42,12 +36,13 @@
       <main class="content">
         <div class="content-header">
           <div>
+            <div class="eyebrow">ASTHONEY / 安全运营</div>
             <h1 class="content-title">攻击者威胁画像</h1>
-            <div class="content-subtitle">按来源 IP 聚合会话、意图与告警。风险分 = 意图严重度 + 攻击链深度 + 告警强度 + 自动化特征，每项都可回传依据。</div>
+            <div class="content-subtitle">按来源聚合行为，依据攻击深度与告警解释风险。</div>
           </div>
           <div class="header-actions">
             <a class="link-button" href="/attack/view">攻击矩阵</a>
-            <button class="button" id="refreshBtn" type="button">手动刷新</button>
+            <button class="button" id="refreshBtn" type="button">刷新数据</button>
           </div>
         </div>
 
@@ -58,14 +53,14 @@
             <div class="kpi-sub">已观测到的攻击源 IP</div>
           </div>
           <div class="kpi">
-            <div class="kpi-label"><span class="dot" style="background: var(--status-critical);"></span>已隔离</div>
+            <div class="kpi-label"><span class="dot" style="background: var(--status-critical);"></span>模拟隔离</div>
             <p class="kpi-value" id="kpiQuarantined">0</p>
             <div class="kpi-sub">模拟隔离动作覆盖的来源</div>
           </div>
           <div class="kpi">
             <div class="kpi-label"><span class="dot" style="background: var(--cat-4);"></span>高危以上</div>
             <p class="kpi-value" id="kpiHigh">0</p>
-            <div class="kpi-sub">风险带为 high / critical</div>
+            <div class="kpi-sub">风险等级为高危或严重</div>
           </div>
         </section>
 
@@ -76,7 +71,7 @@
               <span class="card-meta" id="profileCount">0 个画像</span>
             </div>
             <div class="card-body">
-              <div class="table profiles-table">
+              <div class="table cols-profiles">
                 <div class="table-head">
                   <div>来源</div>
                   <div>风险</div>
@@ -86,8 +81,12 @@
                   <div>状态</div>
                   <div>操作</div>
                 </div>
-                <div id="profileRows" style="display: grid; gap: 6px;">
-                  <div class="empty-state">暂无攻击者画像</div>
+                <div id="profileRows" class="rows">
+                  <div class="skeleton" aria-hidden="true">
+                    <div class="skeleton-line" style="width:90%"></div>
+                    <div class="skeleton-line" style="width:75%"></div>
+                    <div class="skeleton-line" style="width:60%"></div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -110,105 +109,6 @@
   </div>
 
   <script src="/static/app.js"></script>
-  <script>
-    initLayout("profiles");
-
-    const profileRowsEl = document.getElementById("profileRows");
-    const profileCountEl = document.getElementById("profileCount");
-    const profileDetailEl = document.getElementById("profileDetail");
-    const detailMetaEl = document.getElementById("detailMeta");
-    const lastUpdatedEl = document.getElementById("lastUpdated");
-    let profiles = [];
-    let selectedIp = null;
-
-    function renderDetail(profile) {
-      if (!profile) {
-        detailMetaEl.textContent = "选择一个来源";
-        profileDetailEl.innerHTML = '<div class="empty-state">点击左侧来源，查看为什么是这个分数。</div>';
-        return;
-      }
-      const band = riskBandMeta(profile.risk_band);
-      detailMetaEl.textContent = profile.source_ip;
-      const components = (profile.score_components || []).map((item) => {
-        const pct = item.max ? Math.round((item.score / item.max) * 100) : 0;
-        return `
-          <div class="score-row">
-            <div class="score-row-head"><span>${escapeHtml(item.label)}</span><span class="mono">${item.score}/${item.max}</span></div>
-            <div class="score-track"><div class="score-fill ${band.severity}" style="width:${pct}%;"></div></div>
-          </div>
-        `;
-      }).join("");
-      const techniques = (profile.techniques || []).map((item) => `<span class="chip"><span class="mono">${escapeHtml(item.id)}</span>&nbsp;${escapeHtml(item.name)}</span>`).join("");
-      const hosts = (profile.visited_hosts || []).map((item) => `<span class="hop">${escapeHtml(item)}</span>`).join('<span class="arrow">→</span>');
-      const sessionLink = (profile.session_ids || [])[0]
-        ? `<a class="link-button" href="/session/view?session_id=${encodeURIComponent(profile.session_ids[0])}">打开最近会话</a>`
-        : "";
-      profileDetailEl.innerHTML = `
-        <div class="analysis-kv"><div class="k">风险分</div><div class="v">${profile.risk_score} · ${severityPill(profile.risk_band)}</div></div>
-        <div class="score-stack" style="margin:12px 0;">${components}</div>
-        <div class="analysis-kv"><div class="k">访问主机</div><div class="v"><span class="path-flow">${hosts || "—"}</span></div></div>
-        <div class="analysis-kv" style="margin-top:10px;"><div class="k">映射技术</div><div class="v tag-row">${techniques || "—"}</div></div>
-        <div class="footnote">${profile.likely_non_human ? "研判标记为疑似非真人 Agent。" : "未见自动化 Agent 特征。"} 隔离为模拟动作，不触碰真实网络。</div>
-        <div style="margin-top:12px;">${sessionLink}</div>
-      `;
-    }
-
-    function renderProfiles(items) {
-      profiles = items;
-      profileCountEl.textContent = `${items.length} 个画像`;
-      document.getElementById("kpiTotal").textContent = String(items.length);
-      document.getElementById("kpiQuarantined").textContent = String(items.filter((item) => item.quarantined).length);
-      document.getElementById("kpiHigh").textContent = String(items.filter((item) => item.risk_band === "high" || item.risk_band === "critical").length);
-      if (!items.length) {
-        profileRowsEl.innerHTML = '<div class="empty-state">暂无画像。运行 scripts/demo_smoke.sh 后刷新。</div>';
-        renderDetail(null);
-        return;
-      }
-      if (!selectedIp || !items.some((item) => item.source_ip === selectedIp)) {
-        selectedIp = items[0].source_ip;
-      }
-      profileRowsEl.innerHTML = items.map((item) => {
-        const band = riskBandMeta(item.risk_band);
-        const techniques = (item.techniques || []).slice(0, 3).map((row) => row.id).join(" ");
-        const active = item.source_ip === selectedIp ? " style=\"border-color: var(--hairline-strong);\"" : "";
-        return `
-          <div class="table-row" data-ip="${escapeHtml(item.source_ip)}"${active}>
-            <div>
-              <div class="cell-main mono">${escapeHtml(item.source_ip)}</div>
-              <div class="cell-sub">${item.likely_non_human ? "疑似自动化 Agent" : "人工/未判定"}</div>
-            </div>
-            <div>${severityPill(item.risk_band)} <span class="mono">${item.risk_score}</span></div>
-            <div class="mono">${item.sessions}</div>
-            <div class="mono">${item.command_count}</div>
-            <div class="mono inline-meta">${escapeHtml(techniques || "—")}</div>
-            <div>${item.quarantined ? '<span class="pill serious">已隔离</span>' : '<span class="pill good">观察中</span>'}</div>
-            <div><button class="link-button" type="button" data-select="${escapeHtml(item.source_ip)}">依据</button></div>
-          </div>
-        `;
-      }).join("");
-      profileRowsEl.querySelectorAll("[data-select]").forEach((button) => {
-        button.addEventListener("click", () => {
-          selectedIp = button.getAttribute("data-select");
-          renderProfiles(profiles);
-        });
-      });
-      renderDetail(items.find((item) => item.source_ip === selectedIp) || items[0]);
-    }
-
-    async function refresh() {
-      try {
-        const payload = await fetchJSON("/profiles");
-        renderProfiles(payload.profiles || []);
-        lastUpdatedEl.textContent = `最近刷新 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`;
-      } catch (error) {
-        lastUpdatedEl.textContent = `刷新失败: ${error.message || error}`;
-      }
-    }
-
-    document.getElementById("refreshBtn").addEventListener("click", refresh);
-    refresh();
-    connectEventStream(debounce(refresh, 280));
-    setInterval(refresh, 8000);
-  </script>
+  <script src="/static/pages/profiles.js" defer></script>
 </body>
 </html>

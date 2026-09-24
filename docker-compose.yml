@@ -2,25 +2,39 @@ services:
   neo4j:
     image: neo4j:5.23
     ports:
-      - "127.0.0.1:7474:7474"
-      - "127.0.0.1:7687:7687"
+      - "127.0.0.1:${NEO4J_HTTP_PORT:-7474}:7474"
+      - "127.0.0.1:${NEO4J_BOLT_PORT:-7687}:7687"
     environment:
-      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-please_change_me}
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:?请在 .env 配置 NEO4J_PASSWORD}
     volumes:
       - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"$${NEO4J_AUTH#neo4j/}\" 'RETURN 1' >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 15s
 
   app:
     build: .
     ports:
-      - "127.0.0.1:8000:8000"
-      - "127.0.0.1:2222:2222"
-      - "127.0.0.1:2323:2323"
+      - "127.0.0.1:${WEB_PORT:-8765}:8000"
+      - "127.0.0.1:${SSH_PORT:-2222}:2222"
+      - "127.0.0.1:${TCP_PORT:-2323}:2323"
     env_file:
       - .env
     environment:
       - NEO4J_URI=bolt://neo4j:7687
+      - HONEYPOT_BIND_HOST=0.0.0.0
+      - HONEYPOT_PORTS=2222,2323
     depends_on:
-      - neo4j
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
     restart: on-failure
 
 volumes:

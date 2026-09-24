@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -14,7 +15,7 @@ from src.agents.deception_planner import (
     observation_metadata,
     plan_deception,
 )
-from src.agents.shell_world import ssh_hop_banner
+from src.agents.shell_world import ssh_hop_banner, ssh_destination, parse_ssh_command
 from src.agents.sub_agent import SubAgent
 from src.analytics.attack_matrix import build_matrix
 from src.analytics.threat_profile import compute_threat_score
@@ -24,8 +25,9 @@ from src.realtime.event_bus import EventBus
 
 # 命令间隔不超过该秒数，且占多数时，视为脚本或代理批量探测。
 NON_HUMAN_INTERVAL_SECONDS = 1.5
-_SSH_TARGET = re.compile(r"\bssh\s+(?:-\S+\s+)*(?:\S+@)?(?P<target>\d+\.\d+\.\d+\.\d+)")
 
+
+ANALYSIS_TIMEOUT_SECONDS = 12.0
 
 class MazeState(TypedDict, total=False):
     event: dict[str, Any]
@@ -37,6 +39,8 @@ class MazeState(TypedDict, total=False):
     response: str
     prompt: str
     close: bool
+    returning: bool
+    resume_asset_id: str
     plan: dict[str, Any]
     terminal_intent: dict[str, Any]
     actor_mode: str
@@ -62,6 +66,7 @@ class MainAgent:
         self.active_sub_agents: dict[str, SubAgent] = {}
         self.session_shells: dict[str, dict[str, Any]] = {}
         self.session_assets: dict[str, str] = {}
+        self.session_host_stack: dict[str, list[str]] = {}
         self.session_control_flags: set[str] = set()
         self.quarantined_sources: set[str] = set()
         self.seen_sessions: set[str] = set()
@@ -104,11 +109,22 @@ class MainAgent:
         self.active_sub_agents.clear()
         self.session_shells.clear()
         self.session_assets.clear()
+        self.session_host_stack.clear()
         self.session_control_flags.clear()
         self.quarantined_sources.clear()
         self.seen_sessions.clear()
         self.session_categories.clear()
         self.non_human_sources.clear()
+
+    def release_session(self, session_id: str) -> None:
+        """连接结束时释放内存；已写入 Neo4j 的转录与世界快照仍可回看。"""
+        self.active_sub_agents.pop(session_id, None)
+        self.session_shells.pop(session_id, None)
+        self.session_assets.pop(session_id, None)
+        self.session_host_stack.pop(session_id, None)
+        self.session_categories.pop(session_id, None)
+        self.seen_sessions.discard(session_id)
+        self._release_session_controls(session_id)
 
     async def reset_runtime_state(self) -> None:
         await self.close()
@@ -150,7 +166,7 @@ class MainAgent:
             }
         )
         if "target_asset" in result:
-            self.session_assets[session_id] = result["target_asset"]["asset_id"]
+            self.session_assets[session_id] = result.get("resume_asset_id") or result["target_asset"]["asset_id"]
         response_asset_id = current_asset_id
         if isinstance(result.get("target_asset"), dict):
             response_asset_id = str(result["target_asset"].get("asset_id", current_asset_id))
@@ -182,8 +198,14 @@ class MainAgent:
                 payload=response_text,
                 prompt=response_prompt,
             )
-        await self.graph_db.remember_location(session_id=session_id, asset_id=response_asset_id)
+        await self.graph_db.remember_location(session_id=session_id, asset_id=result.get("resume_asset_id") or response_asset_id)
         await self._persist_session_world(session_id)
+        await self.event_bus.publish("terminal.output", {
+            "session_id": session_id, "command": str(event["payload"]),
+            "response": response_text, "prompt": response_prompt,
+            "asset_id": response_asset_id,
+            "actor_mode": result.get("actor_mode", "interpreter"),
+        })
         controls = await self._run_preemptive_controls(
             session_id=session_id,
             source_ip=source_ip,
@@ -263,7 +285,7 @@ class MainAgent:
         snapshot["source"] = "stored"
         await self.graph_db.save_session_world(session_id, snapshot)
 
-    async def session_world(self, session_id: str) -> dict[str, Any]:
+    async def session_world(self, session_id: str) -> dict[str, Any] | None:
         bundle = self._world_bundle(session_id)
         if bundle is not None:
             bundle["session_id"] = session_id
@@ -275,6 +297,8 @@ class MainAgent:
             stored["source"] = "stored"
             stored["session_id"] = session_id
             return stored
+        if await self.graph_db.session_detail(session_id) is None:
+            return None
         return {
             "available": False,
             "session_id": session_id,
@@ -293,8 +317,10 @@ class MainAgent:
             "recent_alerts": alerts,
         }
 
-    async def analyze_session(self, session_id: str) -> dict[str, Any]:
+    async def analyze_session(self, session_id: str) -> dict[str, Any] | None:
         detail = await self.graph_db.session_detail(session_id)
+        if detail is None:
+            return None
         transcript = detail.get("transcript", [])
         intents = detail.get("intents", [])
         heuristic = self._heuristic_analysis(detail)
@@ -312,7 +338,7 @@ class MainAgent:
 
         messages = self._build_analysis_messages(detail)
         try:
-            raw = await self.dashscope_client.chat(messages, temperature=0.1, top_p=0.6)
+            raw = await asyncio.wait_for(self.dashscope_client.chat(messages, temperature=0.1, top_p=0.6), timeout=ANALYSIS_TIMEOUT_SECONDS)
             parsed = self._parse_analysis_json(raw)
             return {
                 **heuristic,
@@ -323,18 +349,13 @@ class MainAgent:
                 "intent_count": len(intents),
                 "analysis_source": "dashscope",
             }
-        except (DashScopeInvocationError, ValueError, KeyError, json.JSONDecodeError):
+        except (TimeoutError, DashScopeInvocationError, ValueError, KeyError, json.JSONDecodeError):
             self.logger.warning("Falling back to heuristic analysis for session %s", session_id)
             return {**heuristic, **enrichment}
 
     async def _session_alerts(self, session_id: str) -> list[dict[str, Any]]:
         """取与该会话相关的告警（用于矩阵与评分）。"""
-        alerts = await self.graph_db.recent_alerts(limit=100)
-        return [
-            alert
-            for alert in alerts
-            if str((alert.get("details") or {}).get("session_id", "")) == session_id
-        ]
+        return await self.graph_db.session_alerts(session_id)
 
     async def _session_threat_score(
         self,
@@ -356,8 +377,10 @@ class MainAgent:
             command_count=len(commands),
         )
 
-    async def trigger_session_analysis_controls(self, session_id: str) -> dict[str, Any]:
+    async def trigger_session_analysis_controls(self, session_id: str) -> dict[str, Any] | None:
         detail = await self.graph_db.session_detail(session_id)
+        if detail is None:
+            return None
         analysis = await self.analyze_session(session_id)
         session = detail.get("session", {})
         source_ip = str(session.get("source_ip", "unknown"))
@@ -445,6 +468,11 @@ class MainAgent:
         plan = state.get("plan") or {}
         existing_sub_agent = self.active_sub_agents.get(session_id)
 
+        stack = self.session_host_stack.get(session_id, [])
+        if str(state["event"]["payload"]).strip() in {"exit", "logout"} and stack:
+            target = await self.graph_db.fetch_asset(stack.pop())
+            return {"route": "engage", "target_asset": target, "returning": True}
+
         if plan.get("strategy") == "banner" or not intent.get("requires_subagent", False):
             response = self._static_response(state["event"])
             return {
@@ -499,28 +527,45 @@ class MainAgent:
         event = state["event"]
         payload = str(event["payload"])
         previous = self.active_sub_agents.get(state["session_id"])
+        ssh = parse_ssh_command(payload)
+        if ssh and previous is None:
+            # The outer SSH login lands on the seeded pivot, even when the first
+            # command immediately opens an inner SSH connection.
+            origin = await self.graph_db.fetch_asset("asset:10.0.5.1")
+            previous = await self._get_or_create_sub_agent(session_id=state["session_id"],
+                source_ip=str(event["source_ip"]), target_asset=origin)
         sub_agent = await self._get_or_create_sub_agent(
             session_id=state["session_id"],
             source_ip=str(event["source_ip"]),
             target_asset=state["target_asset"],
         )
-        hopped = _SSH_TARGET.search(payload) and (previous is None or previous.asset_id != sub_agent.asset_id)
+        if state.get("returning"):
+            return {"response": f"Connection to {previous.asset_snapshot['ip_address']} closed.",
+                    "prompt": sub_agent.prompt, "close": False, "target_asset": sub_agent.asset_snapshot,
+                    "actor_mode": "interpreter", "guardrail": "world", "terminal_intent": state["intent"]}
+        hopped = state["intent"].get("category") == "lateral_movement"
+        if hopped and ssh and ssh[1]:
+            # A remote exec visits the target but returns to the caller's shell.
+            remote = await sub_agent.handle_input(ssh[1], plan=state.get("plan"))
+            restored = await self._get_or_create_sub_agent(session_id=state["session_id"],
+                source_ip=str(event["source_ip"]), target_asset=previous.asset_snapshot)
+            return {"response": remote["response"], "prompt": restored.prompt, "close": False,
+                    "target_asset": sub_agent.asset_snapshot, "resume_asset_id": restored.asset_id,
+                    "actor_mode": remote["actor_mode"], "guardrail": remote["guardrail"],
+                    "terminal_intent": state["intent"]}
         if hopped:
+            if previous is not None:
+                self.session_host_stack.setdefault(state["session_id"], []).append(previous.asset_id)
             plan = state.get("plan") or {}
             sub_agent.active_plan = plan
             sub_agent.world.plant_clue(str(plan.get("planted_clue") or ""))
             source_ip = str(event.get("source_ip") or "10.0.4.8")
-            key_path = ""
             if previous is not None:
                 source_ip = str(previous.asset_snapshot.get("ip_address") or source_ip)
-                if "/srv/backup/id_rsa" in previous.world.files:
-                    key_path = "/srv/backup/id_rsa"
-            match = _SSH_TARGET.search(payload)
             banner = ssh_hop_banner(
-                target=match.group("target") if match else str(sub_agent.asset_snapshot.get("ip_address") or ""),
+                target=str(sub_agent.asset_snapshot.get("ip_address") or ""),
                 hostname=sub_agent.world.hostname,
                 source_ip=source_ip,
-                key_path=key_path,
             )
             return {
                 "response": banner,
@@ -529,7 +574,7 @@ class MainAgent:
                 "target_asset": sub_agent.asset_snapshot,
                 "actor_mode": "interpreter",
                 "guardrail": "world",
-                "terminal_intent": sub_agent._extract_intent(payload.strip()),
+                "terminal_intent": sub_agent.extract_intent(payload.strip()),
             }
         result = await sub_agent.handle_input(payload, plan=state.get("plan"))
         extracted_intent = result.get("intent") if isinstance(result.get("intent"), dict) else {}
@@ -748,16 +793,12 @@ class MainAgent:
                 "requires_subagent": protocol == "ssh",
             }
 
-        ssh_match = re.search(r"\bssh\s+(?:-i\s+\S+\s+)?(?:\S+@)?(?P<target>\d+\.\d+\.\d+\.\d+)", normalized)
-        if ssh_match:
+        target = ssh_destination(payload)
+        if target:
             return {
-                "category": "lateral_movement",
-                "confidence": 0.98,
-                "summary": f"detected lateral movement attempt toward {ssh_match.group('target')}",
-                "requires_subagent": True,
-                "target_ip": ssh_match.group("target"),
-                "target_role": "linux_server",
-                "target_hostname": "db-replica-01" if ssh_match.group("target") == "10.0.5.2" else None,
+                "category": "lateral_movement", "confidence": 0.98,
+                "summary": f"detected lateral movement attempt toward {target}",
+                "requires_subagent": True, "target_ip": target, "target_role": "linux_server",
             }
 
         if normalized.startswith("get ") or normalized.startswith("post ") or normalized.startswith("head "):
@@ -938,7 +979,7 @@ class MainAgent:
             flag = f"{session_id}:intent:non_human"
             if flag not in self.session_control_flags:
                 self.session_control_flags.add(flag)
-                detail = await self.graph_db.session_detail(session_id)
+                detail = await self.graph_db.session_detail(session_id) or {}
                 reasons = self._non_human_reasons(
                     [
                         str(item.get("payload", "")).strip()

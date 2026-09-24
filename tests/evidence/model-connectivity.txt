@@ -1,0 +1,2 @@
+{"configured": true}
+{"live_gateway_response_received": true, "exact_match": true}

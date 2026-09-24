@@ -11,7 +11,6 @@ from typing import Any
 import asyncssh
 
 from src.agents.main_agent import MainAgent
-from src.agents.shell_world import redact_text
 from src.config import AppSettings, DashScopeClient
 from src.network.ssh_honeypot import SSH_USERNAME
 from src.network.traffic_engine import TrafficEngine
@@ -145,10 +144,8 @@ async def _exercise(tmp_path: Path) -> None:
         honeypot_bind_host="127.0.0.1",
         honeypot_ports="0",
         honeypot_protocols="ssh",
-        honeypot_ssh_password="honeypot",
         dashscope_api_key="",
         dashscope_base_url="",
-        admin_api_token="test-token",
     )
     agent = MainAgent(settings=settings, graph_db=graph, dashscope_client=DashScopeClient(settings))  # type: ignore[arg-type]
     await agent.bootstrap()
@@ -163,7 +160,7 @@ async def _exercise(tmp_path: Path) -> None:
             "127.0.0.1",
             port,
             username=SSH_USERNAME,
-            client_keys=[str(material["lure_private_key"])],
+            client_keys=[], agent_path=None,
             known_hosts=None,
         ) as conn:
             process = await conn.create_process(term_type="xterm")
@@ -174,35 +171,53 @@ async def _exercise(tmp_path: Path) -> None:
                 "cat /etc/passwd",
                 "ssh admin@10.0.5.2",
                 "cat /srv/backup/db.env",
+                "cat /srv/backup/archive-sync.sh",
+                "ssh -i ~/.ssh/archive_ed25519 -o ConnectTimeout=3 -p 22 svc-backup@oss-sync-bridge",
+                "cat /srv/oss/manifest.txt",
+                "exit",
+                "hostname",
             ]
             for command in commands:
                 process.stdin.write(command + "\n")
                 output += await _read_until_prompt(process)
             process.stdin.write_eof()
             process.close()
+            await conn.run("ssh svc-backup@10.0.5.1", check=True)
+            assert "from-pivot" in (await conn.run("ls /tmp", check=True)).stdout
+            remote = await conn.run('ssh -i /srv/backup/id_rsa -o ConnectTimeout=3 svc-backup@db-replica-01 "cat /srv/backup/db.env"', check=True)
+            assert "DB_PASS=" in remote.stdout
+            assert (await conn.run("hostname", check=True)).stdout.strip() == "web-pivot-01"
+            await conn.run("cd /tmp", check=True)
+            assert (await conn.run("pwd", check=True)).stdout.strip() == "/tmp"
+        async with asyncssh.connect("127.0.0.1", port, username=SSH_USERNAME,
+                                    client_keys=[], agent_path=None, known_hosts=None) as fresh:
+            assert "No such file" in (await fresh.run("cat /tmp/from-pivot", check=True)).stdout
     finally:
         acceptor.close()
         await acceptor.wait_closed()
 
     text = output.replace("\r\n", "\n")
-    assert "simulated archive" in text
+    assert "finance-export.tar" in text
+    assert "\r\r\n" not in output
+    assert "Authenticated to 10.0.8.7" in text
+    assert "Connection to 10.0.8.7 closed." in text
+    assert "finance-2026-09-22.sql.gz" in text
     assert "Authenticated to 10.0.5.2" in text
-    assert "/srv/backup/id_rsa" in text
+    assert "using publickey" not in text
     assert "DB_PASS=Sync-2026-Apr" in text
-    assert len(graph.sessions) == 1
+    assert len(graph.sessions) == 2
     session_id = next(iter(graph.sessions))
     snapshot = graph.worlds[session_id]
     hostnames = {item["hostname"] for item in snapshot["hosts"]}
     assert {"web-pivot-01", "db-replica-01"} <= hostnames
-    assert snapshot["hostname"] == "db-replica-01"
+    assert snapshot["hostname"] == "web-pivot-01"
     pivot = next(item for item in snapshot["hosts"] if item["hostname"] == "web-pivot-01")
     assert "/tmp/from-pivot" in pivot["created"]
     passwd = next(item for item in graph.decisions if item["raw_input"] == "cat /etc/passwd")
     assert passwd["strategy"] == "deepen"
     hop = next(item for item in graph.decisions if item["raw_input"].startswith("ssh "))
     assert hop["strategy"] == "pivot"
-    hidden = redact_text(next(item["preview"] for item in snapshot["files"] if item["path"] == "/srv/backup/db.env"))
-    assert "Sync-2026-Apr" not in hidden
+
 
 
 async def _read_until_prompt(process: Any) -> str:
